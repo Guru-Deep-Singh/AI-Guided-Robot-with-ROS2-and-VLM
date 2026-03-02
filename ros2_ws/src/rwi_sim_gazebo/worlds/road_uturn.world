@@ -1,0 +1,174 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+  <world name="uturn_test_track">
+
+    <include><uri>model://sun</uri></include>
+
+    <!-- 1. THE GREEN ENVIRONMENT (GRASS) -->
+    <model name="grass_plane">
+      <static>true</static>
+      <link name="link">
+        <visual name="visual">
+          <cast_shadows>false</cast_shadows>
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>200 200</size>
+            </plane>
+          </geometry>
+          <material>
+            <script>
+              <uri>file://media/materials/scripts/gazebo.material</uri>
+              <name>Gazebo/Grass</name>
+            </script>
+          </material>
+        </visual>
+        <collision name="collision">
+          <geometry>
+            <plane>
+              <normal>0 0 1</normal>
+              <size>200 200</size>
+            </plane>
+          </geometry>
+        </collision>
+      </link>
+    </model>
+
+    <!-- 2. THE ASPHALT ROAD -->
+    <road name="main_road">
+      <width>6.0</width>
+      <material>
+        <script>
+          <uri>file://media/materials/scripts/gazebo.material</uri>
+          <name>Gazebo/Asphalt</name>
+        </script>
+      </material>
+      <point>0 0 0.005</point>
+      <point>50 0 0.005</point>
+      <point>54.24 1.76 0.005</point>
+      <point>56.0 6.0 0.005</point>
+      <point>54.24 10.24 0.005</point>
+      <point>50 12 0.005</point>
+      <point>0 12 0.005</point>
+    </road>
+
+    <!-- 3. LANE MARKINGS -->
+    <!--
+      Arc geometry analysis:
+        Road centerline does a U-turn. Circle center = (50, 6), radius = 6.
+        Outer white lines (y=-2.9 / y=14.9 on straights) → arc radius = 8.9
+        Inner white lines (y= 2.9 / y= 9.1 on straights) → arc radius = 3.1
+        Yellow center lines (y=0 / y=12 on straights)    → arc radius = 6.0
+        Arc spans from -90° to +90° (through 0°, i.e. the right/outer side).
+        18 segments × 10° each for smooth appearance.
+    -->
+    <model name="road_markings">
+      <static>true</static>
+      <link name="markings_link">
+
+        <!-- STRAIGHT SECTION: OUTBOUND LANE (y=0 centerline) -->
+        <visual name="out_line_right"><pose>25 -2.9 0.02 0 0 0</pose><geometry><box><size>50 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="out_line_left"><pose>25 2.9 0.02 0 0 0</pose><geometry><box><size>50 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+
+        <!-- STRAIGHT SECTION: RETURN LANE (y=12 centerline) -->
+        <visual name="ret_line_right"><pose>25 9.1 0.02 0 0 0</pose><geometry><box><size>50 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="ret_line_left"><pose>25 14.9 0.02 0 0 0</pose><geometry><box><size>50 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+
+        <!-- STRAIGHT SECTION: YELLOW CENTER DASHES (outbound y=0, return y=12) -->
+        <!-- dash=3m, gap=3m, period=6m — 8 dashes per lane across 50m -->
+        <visual name="yellow_out_0"><pose>1.500 0 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_ret_0"><pose>1.500 12 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_out_1"><pose>7.500 0 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_ret_1"><pose>7.500 12 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_out_2"><pose>13.500 0 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_ret_2"><pose>13.500 12 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_out_3"><pose>19.500 0 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_ret_3"><pose>19.500 12 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_out_4"><pose>25.500 0 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_ret_4"><pose>25.500 12 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_out_5"><pose>31.500 0 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_ret_5"><pose>31.500 12 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_out_6"><pose>37.500 0 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_ret_6"><pose>37.500 12 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_out_7"><pose>43.500 0 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="yellow_ret_7"><pose>43.500 12 0.021 0 0 0</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+
+        <!-- ============================================================ -->
+        <!-- CURVE MARKINGS: arc center (50, 6), 18 segments × 10°        -->
+        <!-- ============================================================ -->
+
+        <!-- CURVE YELLOW CENTER DASHES (radius=6, dash=3m / gap=3m) -->
+        <visual name="curve_yellow_0"><pose>51.484 0.187 0.021 0 0 0.2500</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="curve_yellow_1"><pose>55.694 4.108 0.021 0 0 1.2500</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+        <visual name="curve_yellow_2"><pose>54.668 9.769 0.021 0 0 2.2500</pose><geometry><box><size>3.0 0.15 0.001</size></box></geometry><material><emissive>1 0.8 0 1</emissive></material></visual>
+
+        <!-- CURVE OUTER WHITE LINE (radius = 8.9) -->
+        <visual name="curve_outer_white_0"><pose>50.776 -2.866 0.02 0 0 0.0873</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_1"><pose>52.303 -2.597 0.02 0 0 0.2618</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_2"><pose>53.761 -2.066 0.02 0 0 0.4363</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_3"><pose>55.105 -1.290 0.02 0 0 0.6109</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_4"><pose>56.293 -0.293 0.02 0 0 0.7854</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_5"><pose>57.290 0.895 0.02 0 0 0.9599</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_6"><pose>58.066 2.239 0.02 0 0 1.1345</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_7"><pose>58.597 3.697 0.02 0 0 1.3090</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_8"><pose>58.866 5.224 0.02 0 0 1.4835</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_9"><pose>58.866 6.776 0.02 0 0 1.6581</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_10"><pose>58.597 8.303 0.02 0 0 1.8326</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_11"><pose>58.066 9.761 0.02 0 0 2.0071</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_12"><pose>57.290 11.105 0.02 0 0 2.1817</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_13"><pose>56.293 12.293 0.02 0 0 2.3562</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_14"><pose>55.105 13.290 0.02 0 0 2.5307</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_15"><pose>53.761 14.066 0.02 0 0 2.7053</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_16"><pose>52.303 14.597 0.02 0 0 2.8798</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_outer_white_17"><pose>50.776 14.866 0.02 0 0 3.0543</pose><geometry><box><size>1.551 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+
+        <!-- CURVE INNER WHITE LINE (radius = 3.1) -->
+        <visual name="curve_inner_white_0"><pose>50.270 2.912 0.02 0 0 0.0873</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_1"><pose>50.802 3.006 0.02 0 0 0.2618</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_2"><pose>51.310 3.190 0.02 0 0 0.4363</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_3"><pose>51.778 3.461 0.02 0 0 0.6109</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_4"><pose>52.192 3.808 0.02 0 0 0.7854</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_5"><pose>52.539 4.222 0.02 0 0 0.9599</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_6"><pose>52.810 4.690 0.02 0 0 1.1345</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_7"><pose>52.994 5.198 0.02 0 0 1.3090</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_8"><pose>53.088 5.730 0.02 0 0 1.4835</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_9"><pose>53.088 6.270 0.02 0 0 1.6581</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_10"><pose>52.994 6.802 0.02 0 0 1.8326</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_11"><pose>52.810 7.310 0.02 0 0 2.0071</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_12"><pose>52.539 7.778 0.02 0 0 2.1817</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_13"><pose>52.192 8.192 0.02 0 0 2.3562</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_14"><pose>51.778 8.539 0.02 0 0 2.5307</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_15"><pose>51.310 8.810 0.02 0 0 2.7053</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_16"><pose>50.802 8.994 0.02 0 0 2.8798</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+        <visual name="curve_inner_white_17"><pose>50.270 9.088 0.02 0 0 3.0543</pose><geometry><box><size>0.540 0.12 0.001</size></box></geometry><material><emissive>1 1 1 1</emissive></material></visual>
+
+
+      </link>
+    </model>
+
+    <!-- 4. PHYSICAL BOUNDARIES (JERSEY BARRIERS) -->
+    <include><name>b1</name><uri>model://jersey_barrier</uri><pose>10 -3.2 0 0 0 0</pose></include>
+    <include><name>b2</name><uri>model://jersey_barrier</uri><pose>25 -3.2 0 0 0 0</pose></include>
+    <include><name>b3</name><uri>model://jersey_barrier</uri><pose>40 -3.2 0 0 0 0</pose></include>
+
+    <include><name>b4</name><uri>model://jersey_barrier</uri><pose>10 15.2 0 0 0 0</pose></include>
+    <include><name>b5</name><uri>model://jersey_barrier</uri><pose>25 15.2 0 0 0 0</pose></include>
+    <include><name>b6</name><uri>model://jersey_barrier</uri><pose>40 15.2 0 0 0 0</pose></include>
+
+    <!-- 5. VEGETATION (TREES) -->
+    <include><name>tree_inner_1</name><uri>model://pine_tree</uri><pose>15 6 0 0 0 0</pose></include>
+    <include><name>tree_inner_2</name><uri>model://oak_tree</uri><pose>30 5 0 0 0 0</pose></include>
+    <include><name>tree_inner_3</name><uri>model://oak_tree</uri><pose>45 7 0 0 0 0</pose></include>
+
+    <include><name>tree_outer_1</name><uri>model://pine_tree</uri><pose>5 -6 0 0 0 0</pose></include>
+    <include><name>tree_outer_2</name><uri>model://pine_tree</uri><pose>40 -8 0 0 0 0</pose></include>
+    <include><name>tree_outer_3</name><uri>model://oak_tree</uri><pose>58 6 0 0 0 0</pose></include>
+    <include><name>tree_outer_4</name><uri>model://pine_tree</uri><pose>20 20 0 0 0 0</pose></include>
+
+    <!-- 6. CONES -->
+    <include><name>c1</name><uri>model://construction_cone</uri><pose>12 -1 0 0 0 0</pose></include>
+    <include><name>c2</name><uri>model://construction_cone</uri><pose>57 6 0 0 0 0</pose></include>
+    <include><name>c3</name><uri>model://construction_cone</uri><pose>20 12 0 0 0 0</pose></include>
+
+  </world>
+</sdf>

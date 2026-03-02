@@ -1,0 +1,570 @@
+<?xml version="1.0"?>
+<!--
+  rwi_simple_car — Corrected & slightly reduced (×0.85 from previous version)
+  ============================================================================
+  Geometry summary (all in base_link frame, origin at ground under car centre)
+  ─────────────────────────────────────────────────────────────────────────────
+  Chassis:          2.55 × 1.27 × 0.85 m
+  Wheel radius:     0.34 m
+  Wheel length:     0.21 m
+  Wheel joints:     x = ±1.02 m (wheelbase 2.04 m)
+                    y = ±0.64 m (track width 1.28 m)
+                    z =  0.34 m (= wheel radius, so wheels rest on ground)
+  Chassis CoM:      z = 0.34 + 0.425 = 0.765 m
+  Chassis bottom:   z = 0.34 m  ← sits on wheel axle line ✓
+  Chassis top:      z = 0.34 + 0.85 = 1.19 m  ← camera mounts here ✓
+  ─────────────────────────────────────────────────────────────────────────────
+  Monocular Camera (camera_link):
+    Position:       x = 1.17 (near front), y = 0.0 (centre), z = 0.85 (on chassis top relative to base_link)
+    World z:        0.34 + 0.85 = 1.19 m ✓
+    Pitch:          0.27 rad (~15°) downward tilt to see road ahead
+    FOV:            90° horizontal
+    Resolution:     800 × 800 px
+    Topic:          /camera/image_raw
+  ─────────────────────────────────────────────────────────────────────────────
+  Stereo Camera (stereo_camera_link):
+    Baseline:       0.12 m (hack_baseline) — left lens at y=+0.06, right at y=−0.06
+    Position:       x = 1.17 (near front), y = −0.4 (offset right of centre), z = 0.85
+    World z:        0.34 + 0.85 = 1.19 m ✓
+    Pitch:          0.27 rad (~15°) downward tilt (same as monocular)
+    FOV:            80° horizontal (1.3962634 rad) per camera
+    Resolution:     640 × 480 px per camera
+    Left lens:      stereo_camera_link + y=+0.06 → stereo_camera_left_link
+    Right lens:     stereo_camera_link + y=−0.06 → stereo_camera_right_link
+    Optical frames: stereo_camera_left_link_optical / stereo_camera_right_link_optical
+                    (rotated −90° roll, −90° yaw = ROS optical convention)
+    Depth range:    near=0.02 m, far=300 m
+    Topics:         /stereo_camera/left/image_raw
+                    /stereo_camera/right/image_raw
+                    /stereo_camera/left/camera_info
+                    /stereo_camera/right/camera_info
+                    /stereo_camera/disparity  (published by stereo_image_proc)
+  ─────────────────────────────────────────────────────────────────────────────
+  Wheel separation: 1.53 m  (diff-drive plugin)
+  Wheel diameter:   0.68 m  (diff-drive plugin)
+  Lane fit:         1.27 m car in 3.0 m lane → 0.86 m clearance per side ✓
+  Spawn z in launch: 0.34 (= wheel radius)
+-->
+<robot name="rwi_simple_car">
+
+  <!-- =========================
+       Root Links
+       ========================= -->
+  <link name="base_footprint"/>
+
+  <joint name="base_footprint_to_base_link" type="fixed">
+    <parent link="base_footprint"/>
+    <child link="base_link"/>
+    <origin xyz="0 0 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- =========================
+       Chassis
+       ========================= -->
+  <link name="base_link">
+    <inertial>
+      <!--
+        CoM at geometric centre of chassis box:
+          z = wheel_radius + half_height = 0.34 + 0.425 = 0.765 m
+        Box inertia (m=500 kg, l=2.55, w=1.27, h=0.85):
+          Ixx = m/12*(w²+h²) = 500/12*(1.6129+0.7225) = 97.3
+          Iyy = m/12*(l²+h²) = 500/12*(6.5025+0.7225) = 300.6
+          Izz = m/12*(l²+w²) = 500/12*(6.5025+1.6129) = 338.1
+      -->
+      <origin xyz="0 0 0.765" rpy="0 0 0"/>
+      <mass value="500.0"/>
+      <inertia ixx="97.3"  ixy="0.0" ixz="0.0"
+               iyy="300.6" iyz="0.0"
+               izz="338.1"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0.765" rpy="0 0 0"/>
+      <geometry><box size="2.55 1.27 0.85"/></geometry>
+      <material name="blue"><color rgba="0.1 0.1 0.8 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0.765" rpy="0 0 0"/>
+      <geometry><box size="2.55 1.27 0.85"/></geometry>
+    </collision>
+  </link>
+
+  <!-- =========================
+       Wheels  (radius=0.34 m, length=0.21 m)
+       Solid cylinder inertia:
+         Ixx = Iyy = m/12*(3r²+h²) = 25/12*(3×0.1156+0.0441) = 0.812
+         Izz = 0.5*m*r²            = 0.5×25×0.1156            = 1.445
+       ========================= -->
+  <link name="wheel_fl">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="25.0"/>
+      <inertia ixx="0.812" ixy="0" ixz="0"
+               iyy="0.812" iyz="0"
+               izz="1.445"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.34" length="0.21"/></geometry>
+      <material name="dark_grey"><color rgba="0.2 0.2 0.2 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.34" length="0.21"/></geometry>
+    </collision>
+  </link>
+
+  <link name="wheel_fr">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="25.0"/>
+      <inertia ixx="0.812" ixy="0" ixz="0"
+               iyy="0.812" iyz="0"
+               izz="1.445"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.34" length="0.21"/></geometry>
+      <material name="dark_grey"><color rgba="0.2 0.2 0.2 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.34" length="0.21"/></geometry>
+    </collision>
+  </link>
+
+  <link name="wheel_rl">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="25.0"/>
+      <inertia ixx="0.812" ixy="0" ixz="0"
+               iyy="0.812" iyz="0"
+               izz="1.445"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.34" length="0.21"/></geometry>
+      <material name="dark_grey"><color rgba="0.2 0.2 0.2 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.34" length="0.21"/></geometry>
+    </collision>
+  </link>
+
+  <link name="wheel_rr">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="25.0"/>
+      <inertia ixx="0.812" ixy="0" ixz="0"
+               iyy="0.812" iyz="0"
+               izz="1.445"/>
+    </inertial>
+    <visual>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.34" length="0.21"/></geometry>
+      <material name="dark_grey"><color rgba="0.2 0.2 0.2 1"/></material>
+    </visual>
+    <collision>
+      <origin xyz="0 0 0" rpy="1.5708 0 0"/>
+      <geometry><cylinder radius="0.34" length="0.21"/></geometry>
+    </collision>
+  </link>
+
+  <!-- =========================
+       Wheel Joints
+         x = ±1.02  → wheelbase 2.04 m (80% of body length, wheels clear of bumpers)
+         y = ±0.64  → track width 1.28 m
+         z =  0.34  → wheel radius, so bottom of wheel is at world z=0
+       ========================= -->
+  <joint name="joint_fl" type="continuous">
+    <parent link="base_link"/>
+    <child link="wheel_fl"/>
+    <origin xyz="1.02 0.64 0.34" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <dynamics damping="0.5" friction="0.0"/>
+  </joint>
+
+  <joint name="joint_fr" type="continuous">
+    <parent link="base_link"/>
+    <child link="wheel_fr"/>
+    <origin xyz="1.02 -0.64 0.34" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <dynamics damping="0.5" friction="0.0"/>
+  </joint>
+
+  <joint name="joint_rl" type="continuous">
+    <parent link="base_link"/>
+    <child link="wheel_rl"/>
+    <origin xyz="-1.02 0.64 0.34" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <dynamics damping="0.5" friction="0.0"/>
+  </joint>
+
+  <joint name="joint_rr" type="continuous">
+    <parent link="base_link"/>
+    <child link="wheel_rr"/>
+    <origin xyz="-1.02 -0.64 0.34" rpy="0 0 0"/>
+    <axis xyz="0 1 0"/>
+    <dynamics damping="0.5" friction="0.0"/>
+  </joint>
+
+  <!-- =========================
+       Monocular Camera Hardware
+       Mounted at: x=1.17 (near front), y=0.0 (centre), z=0.85 rel. to base_link
+       World z = wheel_radius(0.34) + z_offset(0.85) = 1.19 m
+       Pitch = 0.27 rad (~15°) downward to see the road ahead
+       FOV: 90° | Resolution: 800×800 | Topic: /camera/image_raw
+       ========================= -->
+  <link name="camera_link">
+    <visual>
+      <geometry><box size="0.20 0.20 0.20"/></geometry>
+      <material name="red"><color rgba="1 0 0 1"/></material>
+    </visual>
+    <inertial>
+      <mass value="2.5"/>
+      <inertia ixx="0.013" ixy="0" ixz="0"
+               iyy="0.013" iyz="0"
+               izz="0.013"/>
+    </inertial>
+  </link>
+
+  <joint name="camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="camera_link"/>
+    <!--
+      x = 1.17  → near the front of the 2.55 m body (half-length = 1.275)
+      y = 0.0   → centred laterally
+      z = 0.85  → chassis top relative to base_link origin
+                  world z = wheel_radius(0.34) + 0.85 = 1.19 m ✓
+      pitch = 0.27 rad (~15°) downward tilt to see the road ahead
+    -->
+    <origin xyz="1.17 0 0.85" rpy="0 0.27 0"/>
+  </joint>
+
+  <link name="camera_link_optical"/>
+  <joint name="camera_optical_joint" type="fixed">
+    <parent link="camera_link"/>
+    <child link="camera_link_optical"/>
+    <!-- ROS optical convention: −90° roll, −90° yaw (x=right, y=down, z=forward) -->
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <!-- =========================
+       Stereo Camera Hardware
+       ─────────────────────────────────────────────────────────────────────
+       Mount point (stereo_camera_link):
+         x = 1.17  → same fore-aft position as monocular camera
+         y = −0.4  → offset 0.4 m to the right of the vehicle centre
+         z = 0.85  → same height as monocular (world z = 1.19 m) ✓
+         pitch = 0.27 rad (~15°) downward tilt (same as monocular)
+
+       Baseline geometry:
+         Left  lens (stereo_camera_left_link):  y = stereo_camera_link + 0.06 = −0.34 m from centre
+         Right lens (stereo_camera_right_link): y = stereo_camera_link − 0.06 = −0.46 m from centre
+         Physical baseline = 0.12 m  (matches hack_baseline in plugin)
+
+       Optical frames (ROS convention, −90° roll / −90° yaw):
+         stereo_camera_left_link_optical
+         stereo_camera_right_link_optical
+
+       Sensor specs (per camera):
+         FOV:        80° horizontal (1.3962634 rad)
+         Resolution: 640 × 480 px
+         Depth range: near=0.02 m, far=300 m
+
+       Topics published by Gazebo plugin:
+         /stereo_camera/left/image_raw
+         /stereo_camera/right/image_raw
+         /stereo_camera/left/camera_info
+         /stereo_camera/right/camera_info
+       Topics published by stereo_image_proc (run separately):
+         /stereo_camera/disparity
+         /stereo_camera/points2  (optional pointcloud)
+       ========================= -->
+  <link name="stereo_camera_link">
+    <visual>
+      <!--
+        Bar visual spanning the 0.12 m baseline:
+          size y = 0.25 m (wider than baseline for visibility in Gazebo)
+      -->
+      <geometry><box size="0.05 0.25 0.05"/></geometry>
+      <material name="grey"><color rgba="0.5 0.5 0.5 1"/></material>
+    </visual>
+    <inertial>
+      <mass value="0.5"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0" iyy="0.0001" iyz="0" izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="stereo_camera_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="stereo_camera_link"/>
+    <!--
+      x = 1.17  → same fore-aft as monocular camera
+      y = −0.4  → shifted 0.4 m to the right so the stereo rig sits
+                  beside the monocular without overlap
+      z = 0.85  → chassis-top height (world z = 1.19 m) ✓
+      pitch = 0.27 rad (~15°) downward tilt, same as monocular
+    -->
+    <origin xyz="1.17 -0.4 0.85" rpy="0 0.27 0"/>
+  </joint>
+
+  <!-- Left lens: +0.06 m in local y from stereo_camera_link -->
+  <link name="stereo_camera_left_link"/>
+  <joint name="stereo_camera_left_joint" type="fixed">
+    <parent link="stereo_camera_link"/>
+    <child link="stereo_camera_left_link"/>
+    <origin xyz="0 0.06 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Right lens: −0.06 m in local y from stereo_camera_link → 0.12 m baseline -->
+  <link name="stereo_camera_right_link"/>
+  <joint name="stereo_camera_right_joint" type="fixed">
+    <parent link="stereo_camera_link"/>
+    <child link="stereo_camera_right_link"/>
+    <origin xyz="0 -0.06 0" rpy="0 0 0"/>
+  </joint>
+
+  <!-- Stereo Optical Links — ROS optical convention (x=right, y=down, z=forward) -->
+  <link name="stereo_camera_left_link_optical"/>
+  <joint name="stereo_camera_left_optical_joint" type="fixed">
+    <parent link="stereo_camera_left_link"/>
+    <child link="stereo_camera_left_link_optical"/>
+    <!-- −90° roll, −90° yaw converts from ROS body frame to camera optical frame -->
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <link name="stereo_camera_right_link_optical"/>
+  <joint name="stereo_camera_right_optical_joint" type="fixed">
+    <parent link="stereo_camera_right_link"/>
+    <child link="stereo_camera_right_link_optical"/>
+    <!-- −90° roll, −90° yaw converts from ROS body frame to camera optical frame -->
+    <origin xyz="0 0 0" rpy="-1.5708 0 -1.5708"/>
+  </joint>
+
+  <!-- =========================
+       Gazebo Physics Properties
+       ========================= -->
+  <!-- Front wheels: low lateral friction (passive, non-driven castors) -->
+  <gazebo reference="wheel_fl"><mu1>0.05</mu1><mu2>0.05</mu2></gazebo>
+  <gazebo reference="wheel_fr"><mu1>0.05</mu1><mu2>0.05</mu2></gazebo>
+  <!-- Rear drive wheels: high traction for differential drive -->
+  <gazebo reference="wheel_rl"><mu1>1.5</mu1><mu2>1.5</mu2></gazebo>
+  <gazebo reference="wheel_rr"><mu1>1.5</mu1><mu2>1.5</mu2></gazebo>
+  <gazebo reference="base_link"><mu1>0.2</mu1><mu2>0.2</mu2></gazebo>
+
+  <!-- =========================
+       Diff Drive Plugin
+       ========================= -->
+  <gazebo>
+    <plugin name="diff_drive" filename="libgazebo_ros_diff_drive.so">
+      <ros><namespace>/</namespace></ros>
+      <update_rate>50</update_rate>
+      <left_joint>joint_rl</left_joint>
+      <right_joint>joint_rr</right_joint>
+      <!-- Must match actual wheel geometry exactly for correct odometry -->
+      <wheel_separation>1.53</wheel_separation>
+      <wheel_diameter>0.68</wheel_diameter>
+      <!--
+        Torque: F=ma → 500kg × 2m/s² = 1000N → T = 1000 × 0.34 = 340 Nm/wheel
+        Using 1500 Nm for responsive acceleration headroom
+      -->
+      <max_wheel_torque>1500</max_wheel_torque>
+      <!--
+        Angular accel: reach 10 m/s → ω=29.4 rad/s in ~2s → α=14.7 rad/s²
+        Using 40 for snappy but not wheelspin-prone response
+      -->
+      <max_wheel_acceleration>40</max_wheel_acceleration>
+      <commandTimeout>0.2</commandTimeout>
+      <publish_odom>true</publish_odom>
+      <publish_odom_tf>true</publish_odom_tf>
+      <odometry_frame>odom</odometry_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+    </plugin>
+  </gazebo>
+
+  <!-- =========================
+       Monocular Camera Sensor Plugin
+       Publishes: /camera/image_raw, /camera/camera_info
+       Frame:     camera_link_optical
+       FOV: 90° | Resolution: 800×800 | Update rate: 30 Hz
+       ========================= -->
+  <gazebo reference="camera_link">
+    <sensor type="camera" name="car_camera">
+      <update_rate>30.0</update_rate>
+      <visualize>true</visualize>
+      <camera name="head">
+        <horizontal_fov>1.5707963</horizontal_fov>  <!-- 90° — good for road-following -->
+        <image>
+          <width>800</width>
+          <height>800</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.1</near>
+          <far>300</far>
+        </clip>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.007</stddev>
+        </noise>
+      </camera>
+      <plugin name="camera_controller" filename="libgazebo_ros_camera.so">
+        <ros>
+          <namespace>/</namespace>
+          <remapping>image_raw:=camera/image_raw</remapping>
+          <remapping>camera_info:=camera/camera_info</remapping>
+        </ros>
+        <frame_name>camera_link_optical</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+  <!-- =========================
+       Stereo Camera Sensor Plugin
+       Type: multicamera (publishes synchronised left+right frames)
+       Publishes (via Gazebo plugin):
+         /stereo_camera/left/image_raw      — left RGB image, 640×480
+         /stereo_camera/right/image_raw     — right RGB image, 640×480
+         /stereo_camera/left/camera_info    — left camera intrinsics
+         /stereo_camera/right/camera_info   — right camera intrinsics
+       Publishes (via stereo_image_proc, run separately):
+         /stereo_camera/disparity           — DisparityImage (32FC1)
+         /stereo_camera/points2             — PointCloud2 (optional)
+       Frame:     stereo_camera_left_link_optical (left camera is reference)
+       Baseline:  hack_baseline=0.12 m  (= left offset 0.06 + right offset 0.06)
+       FOV: 80° (1.3962634 rad) | Resolution: 640×480 | Update rate: 30 Hz
+       Depth range: near=0.02 m, far=300 m
+       ========================= -->
+  <gazebo reference="stereo_camera_link">
+    <sensor type="multicamera" name="stereo_camera">
+      <update_rate>30.0</update_rate>
+      <visualize>true</visualize>
+      <camera name="left">
+        <!-- Left lens at +0.06 m in local y (matches stereo_camera_left_joint) -->
+        <pose>0 0.06 0 0 0 0</pose>
+        <horizontal_fov>1.3962634</horizontal_fov>  <!-- 80° -->
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.02</near>  <!-- 2 cm minimum — important for close-range disparity -->
+          <far>300</far>
+        </clip>
+      </camera>
+      <camera name="right">
+        <!-- Right lens at −0.06 m in local y → 0.12 m baseline total -->
+        <pose>0 -0.06 0 0 0 0</pose>
+        <horizontal_fov>1.3962634</horizontal_fov>  <!-- 80° -->
+        <image>
+          <width>640</width>
+          <height>480</height>
+          <format>R8G8B8</format>
+        </image>
+        <clip>
+          <near>0.02</near>
+          <far>300</far>
+        </clip>
+      </camera>
+      <plugin name="stereo_camera_controller" filename="libgazebo_ros_camera.so">
+        <ros>
+          <namespace>/</namespace>
+          <remapping>left/image_raw:=stereo_camera/left/image_raw</remapping>
+          <remapping>right/image_raw:=stereo_camera/right/image_raw</remapping>
+          <remapping>left/camera_info:=stereo_camera/left/camera_info</remapping>
+          <remapping>right/camera_info:=stereo_camera/right/camera_info</remapping>
+        </ros>
+        <camera_name>stereo_camera</camera_name>
+        <!-- Reference frame is always the LEFT optical frame (ROS stereo convention) -->
+        <frame_name>stereo_camera_left_link_optical</frame_name>
+        <!-- hack_baseline must equal the physical inter-lens distance (0.06+0.06=0.12 m) -->
+        <hack_baseline>0.12</hack_baseline>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+
+  <!-- =========================
+       LiDAR (2-D laser scan)
+       ─────────────────────────────────────────────────────────────────────
+       Mount point (lidar_link):
+         x =  0.90  → near the front of the chassis, behind the cameras
+         y =  0.00  → centred laterally
+         z =  0.85  → chassis-top height (world z = 0.34 + 0.85 = 1.19 m) ✓
+         rpy = 0 0 0  → flat, no pitch — LiDAR scans the horizontal plane
+
+       Sensor specs:
+         Range:      0.15 m – 30.0 m
+         Resolution: 1° → 360 samples per scan
+         FOV:        360° (full circle)
+         Update rate: 15 Hz
+         Topic:      /scan  (sensor_msgs/LaserScan)
+       ========================= -->
+  <link name="lidar_link">
+    <visual>
+      <geometry><cylinder radius="0.08" length="0.06"/></geometry>
+      <material name="black"><color rgba="0.1 0.1 0.1 1"/></material>
+    </visual>
+    <inertial>
+      <mass value="0.3"/>
+      <inertia ixx="0.0001" ixy="0" ixz="0"
+               iyy="0.0001" iyz="0"
+               izz="0.0001"/>
+    </inertial>
+  </link>
+
+  <joint name="lidar_joint" type="fixed">
+    <parent link="base_link"/>
+    <child link="lidar_link"/>
+    <!--
+      x = 0.90  → forward of centre, behind the camera bar (camera at x=1.17)
+      y = 0.00  → centred so the scan is symmetric left/right
+      z = 0.85  → sits on the chassis top (world z = 1.19 m)
+      rpy = 0 0 0  → no rotation — scan plane is horizontal ✓
+    -->
+    <origin xyz="1.2 0.0 0.4" rpy="0 0 0"/>
+  </joint>
+
+  <!-- =========================
+       LiDAR Gazebo Sensor Plugin
+       ========================= -->
+  <gazebo reference="lidar_link">
+    <sensor type="ray" name="lidar_sensor">
+      <pose>0 0 0 0 0 0</pose>
+      <visualize>true</visualize>
+      <update_rate>15</update_rate>
+      <ray>
+        <scan>
+          <horizontal>
+            <samples>360</samples>       <!-- 1° resolution -->
+            <resolution>1</resolution>
+            <min_angle>-1.0472</min_angle>  <!-- −60° -->
+            <max_angle> 1.0472</max_angle>  <!--  60° → full 120° sweep -->
+          </horizontal>
+        </scan>
+        <range>
+          <min>0.5</min>   <!-- 15 cm minimum — avoids self-hit on chassis -->
+          <max>30.0</max>   <!-- 30 m maximum range -->
+          <resolution>0.01</resolution>
+        </range>
+        <noise>
+          <type>gaussian</type>
+          <mean>0.0</mean>
+          <stddev>0.01</stddev>  <!-- 1 cm std dev — realistic for a mid-grade LiDAR -->
+        </noise>
+      </ray>
+      <plugin name="lidar_controller" filename="libgazebo_ros_ray_sensor.so">
+        <ros>
+          <namespace>/</namespace>
+          <remapping>~/out:=scan</remapping>
+        </ros>
+        <output_type>sensor_msgs/LaserScan</output_type>
+        <frame_name>lidar_link</frame_name>
+      </plugin>
+    </sensor>
+  </gazebo>
+
+</robot>
