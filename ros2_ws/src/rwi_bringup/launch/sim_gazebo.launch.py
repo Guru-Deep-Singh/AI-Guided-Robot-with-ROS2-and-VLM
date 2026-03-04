@@ -1,6 +1,6 @@
 from launch import LaunchDescription
 from launch.actions import ExecuteProcess, DeclareLaunchArgument
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch.conditions import IfCondition
 from launch_ros.actions import Node
 from ament_index_python.packages import get_package_share_directory
@@ -40,6 +40,7 @@ def generate_launch_description():
     )
 
     agent_active = LaunchConfiguration('agent_active')
+    use_lidar = LaunchConfiguration('use_lidar')
 
     agent_active_arg = DeclareLaunchArgument(
         'agent_active',
@@ -47,26 +48,36 @@ def generate_launch_description():
         description='Whether to start the agent node'
     )
 
-    # agent_node = Node(
-    #     package='rwi_agent_cloud',
-    #     executable='llm_driver',
-    #     output='screen',
-    #     parameters=[{'use_sim_time': True}],
-    #     condition=IfCondition(agent_active)
-    # )
+    use_lidar_arg = DeclareLaunchArgument(
+        'use_lidar',
+        default_value='false',
+        description='Whether to use the lidar-enabled agent node'
+    )
 
     venv_python = os.path.expanduser('~/ros-with-ai/.venv/bin/python3')  # adjust
 
-    agent_node = ExecuteProcess(
+    agent_node_lidar = ExecuteProcess(
+        cmd=[venv_python, '-m', 'rwi_agent_cloud.llm_driver_node_lidar'],
+        output='screen',
+        condition=IfCondition(
+            PythonExpression(["'", agent_active, "' == 'true' and '", use_lidar, "' == 'true'"])
+        )
+    )
+
+    agent_node_no_lidar = ExecuteProcess(
         cmd=[venv_python, '-m', 'rwi_agent_cloud.llm_driver_node'],
         output='screen',
-        condition=IfCondition(agent_active),
+        condition=IfCondition(
+            PythonExpression(["'", agent_active, "' == 'true' and '", use_lidar, "' != 'true'"])
+        )
     )
 
     return LaunchDescription([
         agent_active_arg,
+        use_lidar_arg,
         gazebo,
         rsp,
         spawn,
-        agent_node
-    ]) 
+        agent_node_lidar,
+        agent_node_no_lidar
+    ])

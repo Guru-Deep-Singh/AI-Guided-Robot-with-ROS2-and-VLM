@@ -8,15 +8,35 @@ import cv2
 import base64
 import os
 import json
+import re
 import numpy as np
 from dotenv import load_dotenv
 from openai import OpenAI
 
+
 load_dotenv()
-if not os.getenv("OPENAI_API_KEY"):
+if not os.getenv("OPENAI_API_KEY") and not os.getenv("LLM_BACKEND"):
     load_dotenv(os.path.join(os.path.expanduser('~'), 'ros-with-ai', '.env'))
 
-SYSTEM_PROMPT = """
+# ------- Backend config -------
+LLM_BACKEND = os.getenv("LLM_BACKEND", "openai").lower()  # "openai" or "local"
+
+if LLM_BACKEND == "local":
+    LOCAL_BASE_URL = os.getenv("LOCAL_BASE_URL", "").rstrip("/")
+    if LOCAL_BASE_URL.endswith("/chat/completions"):
+        LOCAL_BASE_URL = LOCAL_BASE_URL[: -len("/chat/completions")]
+    if not LOCAL_BASE_URL:
+        raise ValueError("LOCAL_BASE_URL must be set in .env when using LLM_BACKEND=local")
+    LOCAL_API_KEY = os.getenv("LOCAL_API_KEY", "none")
+    MODEL  = os.getenv("LOCAL_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+    client = OpenAI(base_url=LOCAL_BASE_URL, api_key=LOCAL_API_KEY)
+else:
+    MODEL  = os.getenv("OPENAI_MODEL", "gpt-4.1")
+    client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+# ------- Prompts ------- 
+
+SYSTEM_PROMPT_OPENAI = """
 You are an autonomous driving system controlling a robot approximately 2.55 m long and 1.27 m wide.
 
 Your goal is to move forward while staying on the gray asphalt road between the white road lines. If an obstacle is detected close to the robot, avoid it and continue moving forward. However, if it is far from the robot, ignore it and continue moving forward.
@@ -32,7 +52,7 @@ ROAD LAYOUT:
 YOU WILL RECEIVE TWO IMAGES:
 1. CAMERA IMAGE — forward-facing RGB view from the robot.
 2. LIDAR MAP — a top-down radar-style image of the robot's surroundings.
-   - The robot is at the CENTER of the LiDAR image (yellow dot), facing UP. The WHITE thin line is the direction of motion of the robot.
+   - The robot is at the CENTER of the LiDAR image (cyan dot), facing UP.
    - WHITE dots are detected obstacles/walls.
    - The colored rings show distance: innermost = 4m, middle = 8m, outer = 12m.
    - LEFT in the LiDAR image = robot's left. RIGHT = robot's right.
@@ -45,46 +65,35 @@ For each column report: asphalt, cone, white line, yellow line, green surface, o
 
 STEP 2 — DETECT ROAD DIRECTION using ONLY the YELLOW center line:
 - Trace the YELLOW center line from the BOTTOM of the image upward to the TOP.
-- In the BOTTOM half, the yellow line is roughly centered. Note where it goes in the TOP half.
-- If the yellow line drifts to the LEFT in the TOP half: the road curves LEFT → you must turn LEFT.
-- If the yellow line drifts to the RIGHT in the TOP half: the road curves RIGHT → you must turn RIGHT.
-- If the yellow line stays centered: road is STRAIGHT → go FORWARD.
-- IMPORTANT: Do NOT use the white edge lines to determine curve direction. White lines are edges and can be misleading. Only use the YELLOW center line.
+- If the yellow line drifts LEFT in the TOP half → road curves LEFT → turn LEFT.
+- If the yellow line drifts RIGHT in the TOP half → road curves RIGHT → turn RIGHT.
+- If the yellow line stays centered → road is STRAIGHT → go FORWARD.
+- Do NOT use white edge lines to determine curve direction.
 
 STEP 3 — CHECK LIDAR MAP for nearby obstacles:
-- If the WHITE dot does not appear in the LIDAR MAP in the direction of motion → treat as no obstacle.
-- If WHITE dots appear inside the innermost ring (within 4m) directly ahead of the yellow dot on LIDAR MAP in the direction of motion → treat as immediate hazard.
-- If WHITE dots appear inside the middle ring (within 8m) directly ahead of the yellow dot on LIDAR MAP in the direction of motion → treat as mid-range obstacle. 
-- If WHITE dots appear inside the outer ring (within 12m) directly ahead of the yellow dot on LIDAR MAP in the direction of motion → treat as far-range obstacle.
-- Use the LiDAR to confirm whether a visible object in the camera is a real obstacle.
-- Use the LiDAR to identify which side (left/right) has a larger gap to steer into.
+- The LiDAR image has labeled zones: AHEAD (top), LEFT (left side), RIGHT (right side).
+- WHITE dots in LEFT or RIGHT zones = road boundary walls. IGNORE them — always present on a road.
+- WHITE dots in the AHEAD zone within 4m = real obstacle in your path → react.
+- WHITE dots in the AHEAD zone beyond 4m → far, ignore and keep FORWARD.
+- NEVER steer because of dots in the LEFT or RIGHT zones — those are road edges not obstacles.
+- Use LiDAR AHEAD zone only to confirm camera obstacles and determine which side has a gap.
 
 STEP 4 — DECIDE ACTION using this priority order:
 
-1. STOP: Only if ALL directions are blocked AND reversing would not help. Absolute last resort.
+1. STOP: Only if ALL directions are blocked. Absolute last resort.
 
-2. REVERSE: Use when:
-   - You are completely off-road and can not see any yellow or white lines.
-   - You are blocked completely by obstacles in all three columns of the RGB image.
-   - Your last 3+ actions were all LEFT or all RIGHT with no improvement (stuck).
-   - Do NOT use REVERSE just because there is a cone ahead. CHECK LIDAR MAP for obstacles first.
+2. REVERSE: Use when completely off-road with no lines visible, OR stuck (last 3+ actions same with no improvement).
+   Do NOT use REVERSE just because there is a cone ahead — check LiDAR first.
 
-3. ROAD CURVES (from Step 2, yellow line analysis):
-   - Curve LEFT: Action = "LEFT"
-   - Curve RIGHT: Action = "RIGHT"
-   - Only apply this if you are confident the yellow line is clearly visible and curving.
+3. ROAD CURVES (Step 2): Curve LEFT → "LEFT". Curve RIGHT → "RIGHT".
 
-4. FORWARD: If the yellow line is centered and straight, CENTER column is clear, and you are not near a white edge.
+4. FORWARD: Yellow line centered, CENTER column clear, not near white edge.
 
-5. OBSTACLE (cone in CENTER column):
-   - LiDAR shows larger gap on LEFT → "LEFT"
-   - LiDAR shows larger gap on RIGHT → "RIGHT"
+5. OBSTACLE (cone in CENTER column): LiDAR gap LEFT → "LEFT". LiDAR gap RIGHT → "RIGHT".
 
-6. DRIFTING (near a white edge or seeing green):
-   - Near LEFT edge: Action = "RIGHT"
-   - Near RIGHT edge: Action = "LEFT"
+6. DRIFTING (near white edge or seeing green): Near LEFT edge → "RIGHT". Near RIGHT edge → "LEFT".
 
-7. OSCILLATION: If last 3 actions alternated LEFT/RIGHT, choose FORWARD or steer toward yellow line.
+7. OSCILLATION: Last 3 actions alternated LEFT/RIGHT → choose FORWARD or steer toward yellow line.
 
 STEP 5 — RETURN JSON only, no extra text:
 {
@@ -99,30 +108,93 @@ STEP 5 — RETURN JSON only, no extra text:
 }
 """
 
-LLM_INTERVAL = 1.5  # seconds between LLM decisions
+# Compact prompt for local models like Qwen2.5-VL 
+SYSTEM_PROMPT_LOCAL = """You are a robot navigation controller. Robot is ~2.55m long, ~1.27m wide, on a gray asphalt road.
+Your task is to drive the robot on the road. Always try to keep the robot in the center of the road, close to the yellow line.
+If you can not see the yellow line, Always try to keep the robot in the center of the road i.e. more asphalt area.
 
-# LiDAR rendering parameters
-LIDAR_IMG_SIZE  = 256   # pixels square
-LIDAR_MAX_RANGE = 12.0  # metres — anything beyond this is ignored
-LIDAR_RINGS_M   = [4.0, 8.0, 12.0]   # distance rings to draw
+ROAD MARKINGS:
+- YELLOW center line: follow it to stay centered and detect road curves.
+- WHITE edge lines: hard boundaries — never cross them.
+- Green surface: off-road, avoid.
+
+PROXIMITY RULE (use image position as depth proxy):
+- Obstacle in BOTTOM THIRD of camera image → CLOSE → react.
+- Obstacle only in TOP HALF of camera image → FAR → ignore, keep going FORWARD.
+
+YOU WILL RECEIVE TWO IMAGES:
+1. CAMERA — forward RGB view.
+2. LIDAR MAP — top-down view. Robot = cyan dot at center, facing UP.
+   - WHITE dots = obstacles. Rings = 4m / 8m / 12m distance.
+   - Use LiDAR to confirm if a camera obstacle is truly close, and which side has more gap.
+
+ANALYZE IN ORDER:
+
+1. COLUMNS — LEFT / CENTER / RIGHT thirds of camera image:
+   Use only: asphalt | cone_close | cone_far | white_line | yellow_line | green | wall | unclear
+   cone_close = cone in bottom third. cone_far = cone only in top half (ignore it).
+
+2. YELLOW LINE — trace from bottom to top:
+   - Drifts left in top half → LEFT curve
+   - Drifts right in top half → RIGHT curve
+   - Stays centered → STRAIGHT
+   ALWAYS use yellow line to determine the road direction. If you can not see yellow line, use white lines to determine the road direction. Give them priority over the distance of obstacle during curves.
+   Foloow the Line even if it means to go close to the obstacle.
+
+3. LIDAR — read the labeled zones (AHEAD / LEFT / RIGHT):
+   - WHITE dots in the LEFT or RIGHT zones = road boundary walls. IGNORE them — they are always there.
+   - WHITE dots in the AHEAD zone within 4m = real obstacle directly in your path → react.
+   - WHITE dots in the AHEAD zone beyond 4m = far obstacle → ignore, keep FORWARD.
+   - ONLY react to dots in the AHEAD / center zone. Never steer because of LEFT or RIGHT zone dots.
+
+4. ACTION — pick exactly one:
+   - STOP: AHEAD blocked AND camera shows all columns blocked. Absolute last resort.
+   - REVERSE: completely off-road with no lines visible, OR stuck 5+ steps same direction. Use only when you can not see any road or yellow line. If you see road steer towards it using LEFT or RIGHT.
+   - LEFT: road curves left, OR cone_close in camera center AND LiDAR AHEAD gap is on left.
+   - RIGHT: road curves right, OR cone_close in camera center AND LiDAR AHEAD gap is on right.
+   - FORWARD: default — use this unless above conditions clearly apply.
+     Dots in LEFT/RIGHT LiDAR zones are road walls — NEVER steer away from them.
+
+OUTPUT — ONLY this JSON, no extra text:
+{
+  "left_column": "<what you see>",
+  "center_column": "<what you see>",
+  "right_column": "<what you see>",
+  "yellow_line": "drifts_left | drifts_right | centered | not_visible",
+  "lidar_summary": "<one sentence>",
+  "action": "FORWARD | LEFT | RIGHT | REVERSE | STOP",
+  "reasoning": "<max 8 words>"
+}"""
+
+# ------- Runtime config -------
+ACTIVE_PROMPT = SYSTEM_PROMPT_LOCAL if LLM_BACKEND == "local" else SYSTEM_PROMPT_OPENAI
+
+LLM_INTERVAL = float(os.getenv("LLM_INTERVAL", "1.5"))
+
+_img_w, _img_h = os.getenv("IMAGE_SIZE", "320x320").split("x")  # Camera is 800x800 square — keep square to avoid aspect ratio distortion
+IMAGE_WIDTH  = int(_img_w)
+IMAGE_HEIGHT = int(_img_h)
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "85"))
+
+LIDAR_IMG_SIZE  = 256
+LIDAR_MAX_RANGE = 12.0
+LIDAR_FOV_DEG   = 120.0         # actual sensor FOV from URDF (−60° to +60°)
+LIDAR_RINGS_M   = [4.0, 8.0, 12.0]
 
 
 class LLMDriverNode(Node):
     def __init__(self):
         super().__init__('llm_driver_node')
 
-        api_key = os.getenv("OPENAI_API_KEY")
-        self.client = OpenAI(api_key=api_key)
-
+        self.client = client
+        self.model  = MODEL
         self.bridge = CvBridge()
         self.latest_image = None
         self.latest_scan  = None
 
-        # Sliding window memory of recent decisions
-        self.history = []
+        self.history     = []
         self.max_history = 5
 
-        # Subscriptions
         self.image_sub = self.create_subscription(
             Image,     '/car_camera/image_raw', self.img_cb,  10)
         self.scan_sub  = self.create_subscription(
@@ -130,36 +202,43 @@ class LLMDriverNode(Node):
 
         self.intent_pub    = self.create_publisher(AgentIntent, '/agent/intent',    10)
         self.cmd_vel_pub   = self.create_publisher(Twist,       '/cmd_vel',         10)
-        # Publishes the LiDAR bird's-eye image so it can be viewed in RViz
         self.lidar_img_pub = self.create_publisher(Image,       '/llm/lidar_image', 10)
 
         self.timer = self.create_timer(LLM_INTERVAL, self.process_llm_logic)
-        self.get_logger().info(f"LLM Driver Node ready. Decision interval: {LLM_INTERVAL}s")
+        self.get_logger().info(
+            f"LLM Driver Node ready. "
+            f"Backend: {LLM_BACKEND.upper()} | Model: {self.model} | "
+            f"Interval: {LLM_INTERVAL}s | Image: {IMAGE_WIDTH}x{IMAGE_HEIGHT} @ Q{JPEG_QUALITY}"
+        )
 
-    # ── Sensor callbacks ──────────────────────────────────────────────────────
+    # ------- Sensor callbacks ------- 
 
     def img_cb(self, msg):
         self.latest_image = msg
 
     def scan_cb(self, msg):
         self.latest_scan = msg
-        # Publish the LiDAR image every time a new scan arrives (~10 Hz),
-        # not just on LLM ticks, so RViz stays fluid.
-        lidar_bgr = self.render_lidar_bgr()
-        if lidar_bgr is not None:
-            ros_img = self.bridge.cv2_to_imgmsg(lidar_bgr, encoding='bgr8')
-            ros_img.header.stamp = msg.header.stamp
-            ros_img.header.frame_id = 'lidar_link'
-            self.lidar_img_pub.publish(ros_img)
+        try:
+            lidar_bgr = self.render_lidar_bgr()
+            if lidar_bgr is not None:
+                ros_img = self.bridge.cv2_to_imgmsg(lidar_bgr, encoding='bgr8')
+                ros_img.header.stamp    = msg.header.stamp
+                ros_img.header.frame_id = 'lidar_link'
+                self.lidar_img_pub.publish(ros_img)
+            else:
+                self.get_logger().warn("render_lidar_bgr returned None", throttle_duration_sec=5.0)
+        except Exception as e:
+            self.get_logger().error(f"LiDAR image render/publish failed: {e}")
 
-    # ── LiDAR → top-down image ────────────────────────────────────────────────
+    # ------- LiDAR: top-down image ------- 
 
     def render_lidar_bgr(self):
-        """Render the current LaserScan as a top-down bird's-eye BGR image.
+        """Render 2D LiDAR (120° FOV, −60° to +60°) as a top-down BGR image.
 
-        Robot at centre, facing UP.  White dots = obstacles.
-        Coloured rings mark 3 / 6 / 9 m.
-        Returns a numpy BGR uint8 array, or None if no scan available.
+        Robot = cyan dot at centre, facing UP.
+        White dots = obstacles. Coloured rings = 4 / 8 / 12 m.
+        Gray wedge = the 120° sensor coverage cone.
+        Dark region outside the wedge = blind zone (no sensor data).
         """
         if self.latest_scan is None:
             return None
@@ -167,23 +246,62 @@ class LLMDriverNode(Node):
         scan   = self.latest_scan
         size   = LIDAR_IMG_SIZE
         cx, cy = size // 2, size // 2
-        scale  = (size // 2 - 4) / LIDAR_MAX_RANGE  # px per metre
+        scale  = (size // 2 - 4) / LIDAR_MAX_RANGE
 
         img = np.zeros((size, size, 3), dtype=np.uint8)
 
-        # Distance rings
-        ring_colors = [(120, 60, 60), (60, 120, 60), (60, 60, 120)]  # BGR
+        # ------- Draw 120° coverage wedge so the LLM can see the sensor FOV ------- 
+        # The sensor sweeps −60° to +60° around forward (up in image).
+        # In image coords: forward=up, left=left. Angles from +y axis (up).
+        # cv2.ellipse angles are measured from +x axis (right), clockwise.
+        # sensor left edge  = −60° from forward = 30° from +x axis  (image: 210°)
+        # sensor right edge = +60° from forward = 150° from +x axis (image: 330°... wait)
+        # Simpler: draw filled polygon for the wedge.
+        half_fov = np.radians(LIDAR_FOV_DEG / 2.0)   # 60°
+        r_px = int(LIDAR_MAX_RANGE * scale)
+        n_pts = 32
+        wedge_angles = np.linspace(-half_fov, half_fov, n_pts)
+        # In image: forward=up → col offset = sin(a), row offset = -cos(a)
+        wx = (cx + r_px * np.sin(wedge_angles)).astype(int)
+        wy = (cy - r_px * np.cos(wedge_angles)).astype(int)
+        wedge_pts = np.column_stack([wx, wy])
+        wedge_pts = np.vstack([[cx, cy], wedge_pts, [cx, cy]])
+        cv2.fillPoly(img, [wedge_pts.astype(np.int32)], (30, 30, 30))  # dark gray
+
+        # ------- Distance rings ------- 
+        ring_colors = [(100, 60, 60), (60, 100, 60), (60, 60, 100)]
         for dist, color in zip(LIDAR_RINGS_M, ring_colors):
             cv2.circle(img, (cx, cy), int(dist * scale), color, 1)
 
-        # Forward direction tick
-        cv2.line(img, (cx, cy), (cx, cy - int(LIDAR_MAX_RANGE * scale)),
-                 (80, 80, 80), 1)
+        # ------- Forward direction tick ------- 
+        cv2.line(img, (cx, cy), (cx, cy - r_px), (80, 80, 80), 1)
 
-        # Robot marker (cyan dot)
+        # ------- FOV boundary lines (show edge of 120° cone) ------- 
+        for sign in [-1, 1]:
+            ex = int(cx + r_px * np.sin(sign * half_fov))
+            ey = int(cy - r_px * np.cos(sign * half_fov))
+            cv2.line(img, (cx, cy), (ex, ey), (60, 60, 60), 1)
+
+        # ------- Zone labels so the LLM knows spatial layout ------- 
+        font       = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.35
+        font_color = (180, 180, 180)
+        thickness  = 1
+        # AHEAD label — top centre
+        cv2.putText(img, "AHEAD", (cx - 22, 12), font, font_scale, font_color, thickness)
+        # LEFT label — middle left
+        cv2.putText(img, "LEFT",  (4, cy),        font, font_scale, font_color, thickness)
+        # RIGHT label — middle right
+        cv2.putText(img, "RIGHT", (size - 38, cy),font, font_scale, font_color, thickness)
+        # NEAR label — just above robot
+        cv2.putText(img, "4m",  (cx + 6, cy - int(4.0  * scale)), font, font_scale, (80,80,80), thickness)
+        cv2.putText(img, "8m",  (cx + 6, cy - int(8.0  * scale)), font, font_scale, (80,80,80), thickness)
+        cv2.putText(img, "12m", (cx + 6, cy - int(11.5 * scale)), font, font_scale, (80,80,80), thickness)
+
+        # ------- Robot marker (cyan dot) ------- 
         cv2.circle(img, (cx, cy), 4, (0, 200, 255), -1)
 
-        # Scan points
+        # ------- Scan points ------- 
         angles = (scan.angle_min
                   + np.arange(len(scan.ranges)) * scan.angle_increment)
         ranges = np.array(scan.ranges, dtype=np.float32)
@@ -194,8 +312,7 @@ class LLMDriverNode(Node):
         angles = angles[valid]
         ranges = ranges[valid]
 
-        # ROS REP-103: angle 0 = forward (+x), positive CCW = left (+y)
-        # Image: forward = up (-row), left = left (-col)
+        # ROS REP-103: angle 0 = forward, positive CCW = left
         px_col = (cx - ranges * np.sin(angles) * scale).astype(int)
         px_row = (cy - ranges * np.cos(angles) * scale).astype(int)
 
@@ -207,14 +324,43 @@ class LLMDriverNode(Node):
         return img
 
     def render_lidar_base64(self):
-        """Return the LiDAR image as a base64 JPEG string for the LLM."""
         bgr = self.render_lidar_bgr()
         if bgr is None:
             return None
         _, buf = cv2.imencode('.jpg', bgr, [cv2.IMWRITE_JPEG_QUALITY, 85])
         return base64.b64encode(buf).decode('utf-8')
 
-    # ── Main LLM loop ─────────────────────────────────────────────────────────
+    # ------- JSON extraction ------- 
+    # This is critial fix for local models as sometimes they can not comply withn JSON 
+    # format and return extra text or markdown. This function extracts the JSON 
+    # and returns it as a dictionary.
+    def _extract_json(self, raw: str) -> dict:
+        if not raw or not raw.strip():
+            raise ValueError("Empty response from LLM")
+
+        raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+        raw = re.sub(r'```(?:json)?\s*(.*?)\s*```', r'\1', raw, flags=re.DOTALL).strip()
+
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+
+        action_match = re.search(
+            r'"action"\s*:\s*"(FORWARD|LEFT|RIGHT|REVERSE|STOP)"', raw
+        )
+        if action_match:
+            reason_match = re.search(r'"reasoning"\s*:\s*"([^"]*)', raw)
+            return {
+                "action":    action_match.group(1),
+                "reasoning": reason_match.group(1) if reason_match else "truncated",
+            }
+
+        raise ValueError(f"No JSON found in response: {raw[:200]}")
+
+    # ------- Main LLM loop ------- 
 
     def process_llm_logic(self):
         if self.latest_image is None:
@@ -224,49 +370,65 @@ class LLMDriverNode(Node):
             self.get_logger().warn("Waiting for LiDAR scan...")
             return
 
-        # Encode camera image
         cv_img  = self.bridge.imgmsg_to_cv2(self.latest_image, "bgr8")
-        _, buf  = cv2.imencode('.jpg', cv2.resize(cv_img, (320, 240)))
+        resized = cv2.resize(cv_img, (IMAGE_WIDTH, IMAGE_HEIGHT))
+        _, buf  = cv2.imencode('.jpg', resized, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
         cam_b64 = base64.b64encode(buf).decode('utf-8')
 
         lidar_b64 = self.render_lidar_base64()
 
-        # Build messages
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": ACTIVE_PROMPT}]
 
         if self.history:
             history_str = " -> ".join([h['action'] for h in self.history])
             messages.append({
-                "role": "user",
-                "content": f"My last {len(self.history)} actions were: {history_str}."
+                "role":    "user",
+                "content": f"My last {len(self.history)} actions were: {history_str}.",
             })
 
         if lidar_b64:
             content = [
-                {"type": "text",      "text": "IMAGE 1 — Camera (forward view):"},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{cam_b64}"}},
-                {"type": "text",      "text": "IMAGE 2 — LiDAR map (top-down, robot at centre facing up):"},
+                {"type": "text",      "text": "IMAGE 1 above: Camera (forward view). IMAGE 2 below: LiDAR map (top-down, robot = cyan dot at center facing up, rings = 4m/8m/12m)."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{lidar_b64}"}},
                 {"type": "text",      "text": "What is my next action?"},
             ]
         else:
             content = [
-                {"type": "text",      "text": "Camera view only (LiDAR unavailable). What is my next action?"},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{cam_b64}"}},
+                {"type": "text",      "text": "Camera view only (LiDAR unavailable). What is my next action?"},
             ]
 
         messages.append({"role": "user", "content": content})
 
         try:
-            response = self.client.chat.completions.create(
-                model="gpt-4.1",
-                messages=messages,
-                response_format={"type": "json_object"},
-            )
+            if LLM_BACKEND == "local":
+                # Qwen2.5-VL via FastAPI server — no response_format, no extra_body
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    max_tokens=256,
+                    temperature=0.1,
+                )
+                raw_content = response.choices[0].message.content or ""
+                self.get_logger().debug(f"Raw LLM response: {raw_content[:300]}")
+                res = self._extract_json(raw_content)
+            else:
+                # OpenAI — guaranteed JSON via response_format
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    response_format={"type": "json_object"},
+                )
+                res = json.loads(response.choices[0].message.content)
 
-            res       = json.loads(response.choices[0].message.content)
-            action    = res['action']
-            reasoning = res['reasoning']
+            action    = res.get('action', 'STOP')
+            reasoning = res.get('reasoning', '')
+
+            if action not in ["FORWARD", "LEFT", "RIGHT", "REVERSE", "STOP"]:
+                self.get_logger().warn(f"Invalid action '{action}' — stopping.")
+                self.publish_stop()
+                return
 
             self.history.append({"action": action, "reasoning": reasoning})
             if len(self.history) > self.max_history:
@@ -278,25 +440,38 @@ class LLMDriverNode(Node):
             self.get_logger().error(f"LLM call failed: {e}")
             self.publish_stop()
 
-    # ── Command publishing ────────────────────────────────────────────────────
+    # ------- Command publishing ------- 
 
-    def publish_commands(self, action, reasoning, res):
+    def publish_commands(self, action: str, reasoning: str, res: dict):
         intent           = AgentIntent()
         intent.intent    = action
         intent.reasoning = reasoning
         self.intent_pub.publish(intent)
 
         msg = Twist()
-        if action == "FORWARD":
-            msg.linear.x  =  0.4;  msg.angular.z =  0.0
-        elif action == "LEFT":
-            msg.linear.x  =  0.2;  msg.angular.z =  0.1
-        elif action == "RIGHT":
-            msg.linear.x  =  0.2;  msg.angular.z = -0.1
-        elif action == "REVERSE":
-            msg.linear.x  = -0.3;  msg.angular.z =  0.0
-        elif action == "STOP":
-            msg.linear.x  =  0.0;  msg.angular.z =  0.0
+        if LLM_BACKEND == "local":
+            if action == "FORWARD":
+                msg.linear.x  =  0.3;  msg.angular.z =  0.0
+            elif action == "LEFT":
+                msg.linear.x  =  0.2;  msg.angular.z =  0.05
+            elif action == "RIGHT":
+                msg.linear.x  =  0.2;  msg.angular.z = -0.05
+            elif action == "REVERSE":
+                msg.linear.x  = -0.2;  msg.angular.z =  0.0
+            elif action == "STOP":
+                msg.linear.x  =  0.0;  msg.angular.z =  0.0
+        else:
+            if action == "FORWARD":
+                msg.linear.x  =  0.4;  msg.angular.z =  0.0
+            elif action == "LEFT":
+                msg.linear.x  =  0.2;  msg.angular.z =  0.1
+            elif action == "RIGHT":
+                msg.linear.x  =  0.2;  msg.angular.z = -0.1
+            elif action == "REVERSE":
+                msg.linear.x  = -0.3;  msg.angular.z =  0.0
+            elif action == "STOP":
+                msg.linear.x  =  0.0;  msg.angular.z =  0.0
+
         self.cmd_vel_pub.publish(msg)
 
         self.get_logger().info(
