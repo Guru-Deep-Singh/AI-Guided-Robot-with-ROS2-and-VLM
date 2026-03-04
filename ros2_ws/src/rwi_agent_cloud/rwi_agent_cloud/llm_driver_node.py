@@ -8,36 +8,35 @@ import cv2
 import base64
 import os
 import json
-from pathlib import Path
 from dotenv import load_dotenv
 from openai import OpenAI
+import re
 
-# Load .env from the current working directory / parents (default behavior)
+
 load_dotenv()
-
-# Fallback: explicitly load .env from the project root if keys are still missing
 if not os.getenv("OPENAI_API_KEY") and not os.getenv("LLM_BACKEND"):
-    project_root = Path(__file__).resolve().parents[4]
-    load_dotenv(project_root / ".env")
+    load_dotenv(os.path.join(os.path.expanduser('~'), 'ros-with-ai', '.env'))
 
-# --- Backend config ---
-LLM_BACKEND = os.getenv("LLM_BACKEND", "openai").lower()  # "openai" or "ollama"
+# ------ Backend config -------
+LLM_BACKEND = os.getenv("LLM_BACKEND", "openai").lower()  # "openai" or "local"
 
-if LLM_BACKEND == "ollama":
-    OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL")
-    OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
-    if not OLLAMA_BASE_URL:
-        raise ValueError("OLLAMA_BASE_URL must be set in .env when using LLM_BACKEND=ollama")
-    MODEL = os.getenv("OLLAMA_MODEL", "gemma3:4b")
-    client = OpenAI(
-        base_url=OLLAMA_BASE_URL,
-        api_key=OLLAMA_API_KEY
-    )
+if LLM_BACKEND == "local":
+    LOCAL_BASE_URL = os.getenv("LOCAL_BASE_URL")
+    LOCAL_API_KEY  = os.getenv("LOCAL_API_KEY", "none")
+    if not LOCAL_BASE_URL:
+        raise ValueError("LOCAL_BASE_URL must be set in .env when using LLM_BACKEND=local")
+    # Strip trailing /chat/completions if someone pasted the full path
+    LOCAL_BASE_URL = LOCAL_BASE_URL.rstrip("/")
+    if LOCAL_BASE_URL.endswith("/chat/completions"):
+        LOCAL_BASE_URL = LOCAL_BASE_URL[: -len("/chat/completions")]
+    MODEL  = os.getenv("LOCAL_MODEL", "Qwen/Qwen2.5-VL-7B-Instruct")
+    client = OpenAI(base_url=LOCAL_BASE_URL, api_key=LOCAL_API_KEY)
 else:
-    MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1")
+    MODEL  = os.getenv("OPENAI_MODEL", "gpt-4.1")
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-SYSTEM_PROMPT = """
+# ------- Prompts -------
+SYSTEM_PROMPT_OPENAI = """
 You are an autonomous driving system controlling a robot approximately 2.55 m long and 1.27 m wide.
 
 Your goal is to move forward while staying on the gray asphalt road. If a obstacle is detected close to the robot, avoid it and continue moving forward. However, if it is far from the robot, ignore it and continue moving forward.
@@ -82,7 +81,6 @@ STEP 3 — DECIDE ACTION using this priority order:
 
 6. OSCILLATION: If your last 3 actions alternated LEFT and RIGHT, choose FORWARD or steer toward the yellow line.
 
-
 STEP 4 — RETURN JSON only, no extra text:
 {
   "left_column": "what you see",
@@ -95,58 +93,119 @@ STEP 4 — RETURN JSON only, no extra text:
 }
 """
 
-SYSTEM_PROMPT_ollama = """
-You are an autonomous driving system controlling a robot approximately 2.55 m long and 1.27 m wide.
+# Compact prompt for local models
+SYSTEM_PROMPT_LOCAL = """You are a robot navigation controller. The robot is ~2.55 m long, ~1.27 m wide, driving on a gray asphalt road.
 
-Your goal is to move forward while staying on the gray asphalt road. If a obstacle is detected close to the robot, avoid it and continue moving forward. However, if it is far from the robot, ignore it and continue moving forward.
+ROAD MARKINGS:
+- YELLOW center line: use this to detect road direction and stay centered.
+- WHITE edge lines: road boundaries — never cross them.
+- Green surface: off-road, avoid.
 
-ROAD LAYOUT:
-- The road has a YELLOW center line and WHITE edge lines on both sides.
-- You must NEVER cross the WHITE edge lines.
-- You MAY cross the YELLOW center line only to avoid an obstacle.
-- Green surface is NOT drivable.
+PROXIMITY RULE — use apparent size to judge if an obstacle is a threat:
+- If an obstacle appears in the BOTTOM THIRD of the image → it is CLOSE → react to it.
+- If an obstacle appears only in the TOP HALF of the image → it is FAR AWAY → ignore it, keep going FORWARD.
+- A small or distant-looking object near the top is NOT a reason to stop or turn.
 
-RETURN JSON only, no extra text:
+ANALYZE IN ORDER:
+
+1. COLUMNS — describe what you see in LEFT / CENTER / RIGHT thirds of the image:
+   Use only: asphalt | cone_close | cone_far | white_line | yellow_line | green | wall | unclear
+   cone_close = cone visible in bottom third of image
+   cone_far   = cone visible only in top half of image (ignore it)
+
+2. YELLOW LINE DIRECTION — trace the yellow center line from bottom to top:
+   - Drifts left in top half → road curves LEFT
+   - Drifts right in top half → road curves RIGHT
+   - Stays centered → STRAIGHT
+
+3. ACTION — pick exactly one using this priority:
+   - STOP: all three columns have cone_close or wall at bottom. Absolute last resort.
+   - LEFT: road curves left, OR cone_close in center column with left side clear
+   - RIGHT: road curves right, OR cone_close in center column with right side clear
+   - FORWARD: anything else — default to this. cone_far is never a reason to stop or turn.
+   - If near white edge: steer away from it.
+
+OUTPUT — respond with ONLY this JSON, no extra text:
 {
-  "action": "FORWARD|LEFT|RIGHT|STOP",
-  "reasoning": "one sentence explanation"
-}
-"""
+  "left_column": "<what you see>",
+  "center_column": "<what you see>",
+  "right_column": "<what you see>",
+  "yellow_line": "drifts_left | drifts_right | centered",
+  "action": "FORWARD | LEFT | RIGHT | STOP",
+  "reasoning": "<max 8 words>"
+}"""
+
+ACTIVE_PROMPT  = SYSTEM_PROMPT_OPENAI if LLM_BACKEND == "openai" else SYSTEM_PROMPT_LOCAL
+COL_LEFT_KEY   = "left_column"
+COL_CENTER_KEY = "center_column"
+COL_RIGHT_KEY  = "right_column"
+REASONING_KEY  = "reasoning"
 
 LLM_INTERVAL = float(os.getenv("LLM_INTERVAL", "1.5"))
 
-# Image encoding settings — smaller = faster LLM response, lower quality
-_img_w, _img_h = os.getenv("IMAGE_SIZE", "160x120").split("x")
-IMAGE_WIDTH = int(_img_w)
+_img_w, _img_h = os.getenv("IMAGE_SIZE", "320x240").split("x")
+IMAGE_WIDTH  = int(_img_w)
 IMAGE_HEIGHT = int(_img_h)
-JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "50"))  # 0-100, lower = smaller payload
+JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "85"))
+
 
 class LLMDriverNode(Node):
     def __init__(self):
         super().__init__('llm_driver_node')
 
         self.client = client
-        self.model = MODEL
+        self.model  = MODEL
         self.bridge = CvBridge()
         self.latest_image = None
 
-        # Sliding window memory of recent decisions
-        self.history = []
+        self.history     = []
         self.max_history = 5
 
-        self.image_sub = self.create_subscription(
+        self.image_sub  = self.create_subscription(
             Image, '/car_camera/image_raw', self.img_cb, 10)
         self.intent_pub = self.create_publisher(AgentIntent, '/agent/intent', 10)
         self.cmd_vel_pub = self.create_publisher(Twist, '/cmd_vel', 10)
 
         self.timer = self.create_timer(LLM_INTERVAL, self.process_llm_logic)
         self.get_logger().info(
-            f"LLM Driver Node ready. Backend: {LLM_BACKEND.upper()} | Model: {self.model} | "
+            f"LLM Driver Node ready. "
+            f"Backend: {LLM_BACKEND.upper()} | Model: {self.model} | "
             f"Interval: {LLM_INTERVAL}s | Image: {IMAGE_WIDTH}x{IMAGE_HEIGHT} @ Q{JPEG_QUALITY}"
         )
 
     def img_cb(self, msg):
         self.latest_image = msg
+
+    def _extract_json(self, raw: str) -> dict:
+        if not raw or not raw.strip():
+            raise ValueError("Empty response from LLM")
+
+        # Strip <think>...</think> blocks for thinking models
+        raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
+
+        # Strip markdown code fences
+        raw = re.sub(r'```(?:json)?\s*(.*?)\s*```', r'\1', raw, flags=re.DOTALL).strip()
+
+        # Try to find and parse a JSON object
+        match = re.search(r'\{.*\}', raw, re.DOTALL)
+        if match:
+            try:
+                return json.loads(match.group())
+            except json.JSONDecodeError:
+                pass
+
+        # Partial recovery: pull action field even from truncated response
+        action_match = re.search(r'"action"\s*:\s*"(FORWARD|LEFT|RIGHT|STOP)"', raw)
+        if action_match:
+            reason_match = re.search(
+                rf'"{REASONING_KEY}"\s*:\s*"([^"]*)', raw
+            )
+            return {
+                "action":       action_match.group(1),
+                REASONING_KEY:  reason_match.group(1) if reason_match else "truncated",
+            }
+
+        raise ValueError(f"No JSON object found in response: {raw[:200]}")
 
     def process_llm_logic(self):
         if self.latest_image is None:
@@ -155,42 +214,54 @@ class LLMDriverNode(Node):
 
         # Encode image
         cv_img = self.bridge.imgmsg_to_cv2(self.latest_image, "bgr8")
-        _, buffer = cv2.imencode('.jpg', cv2.resize(cv_img, (IMAGE_WIDTH, IMAGE_HEIGHT))) #[cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
+        resized = cv2.resize(cv_img, (IMAGE_WIDTH, IMAGE_HEIGHT))
+        encode_params = [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY]
+        _, buffer = cv2.imencode('.jpg', resized, encode_params)
         base64_img = base64.b64encode(buffer).decode('utf-8')
 
         # Build messages
-        messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+        messages = [{"role": "system", "content": ACTIVE_PROMPT}]
 
         if self.history:
             history_str = " -> ".join([h['action'] for h in self.history])
             messages.append({
-                "role": "user",
-                "content": f"My last {len(self.history)} actions were: {history_str}."
+                "role":    "user",
+                "content": f"My last {len(self.history)} actions were: {history_str}.",
             })
 
         messages.append({
             "role": "user",
             "content": [
-                {"type": "text", "text": "This is my current view. What is my next action? Do not think. Answer immediately."},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}}
-            ]
+                {"type": "image_url",
+                 "image_url": {"url": f"data:image/jpeg;base64,{base64_img}"}},
+                {"type": "text",
+                 "text": "This is my current view. What is my next action?"},
+            ],
         })
 
         try:
+            # NOTE: no extra_body — Qwen2.5-VL does not support {"think": False}
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                #response_format={"type": "json_object"},
-                max_tokens=200
+                max_tokens=256,
             )
 
-            res = json.loads(response.choices[0].message.content)
-            action = res['action']
-            reasoning = res['reasoning']
+            raw_content = response.choices[0].message.content or ""
+            self.get_logger().debug(f"Raw LLM response: {raw_content[:300]}")
+            res = self._extract_json(raw_content)
 
-            self.history.append({"action": action, "reasoning": reasoning})
+            action    = res.get('action', 'STOP')
+            reasoning = res.get(REASONING_KEY, '')
+
+            self.history.append({"action": action, REASONING_KEY: reasoning})
             if len(self.history) > self.max_history:
                 self.history.pop(0)
+
+            if action not in ["FORWARD", "LEFT", "RIGHT", "STOP"]:
+                self.get_logger().warn(f"Invalid action: {action} | full response: {res}")
+                self.publish_stop()
+                return
 
             self.publish_commands(action, reasoning, res)
 
@@ -198,54 +269,56 @@ class LLMDriverNode(Node):
             self.get_logger().error(f"LLM call failed: {e}")
             self.publish_stop()
 
-    def publish_commands(self, action, reasoning, res):
+    def publish_commands(self, action: str, reasoning: str, res: dict):
         intent = AgentIntent()
-        intent.intent = action
+        intent.intent    = action
         intent.reasoning = reasoning
         self.intent_pub.publish(intent)
 
         msg = Twist()
-        if LLM_BACKEND == "ollama":
+        if LLM_BACKEND == "local":
+            # Qwen2.5-VL on AMD server
             if action == "FORWARD":
-                msg.linear.x = 0.3
+                msg.linear.x  = 0.2
                 msg.angular.z = 0.0
             elif action == "LEFT":
-                msg.linear.x = 0.1
+                msg.linear.x  = 0.1
                 msg.angular.z = 0.05
             elif action == "RIGHT":
-                msg.linear.x = 0.1
+                msg.linear.x  = 0.1
                 msg.angular.z = -0.05
             elif action == "STOP":
-                msg.linear.x = 0.0
+                msg.linear.x  = 0.0
                 msg.angular.z = 0.0
         else:
+            # OpenAI
             if action == "FORWARD":
-                msg.linear.x = 0.4
+                msg.linear.x  = 0.4
                 msg.angular.z = 0.0
             elif action == "LEFT":
-                msg.linear.x = 0.2
+                msg.linear.x  = 0.2
                 msg.angular.z = 0.1
             elif action == "RIGHT":
-                msg.linear.x = 0.2
+                msg.linear.x  = 0.2
                 msg.angular.z = -0.1
             elif action == "STOP":
-                msg.linear.x = 0.0
+                msg.linear.x  = 0.0
                 msg.angular.z = 0.0
 
         self.cmd_vel_pub.publish(msg)
 
         self.get_logger().info(
             f"ACTION: {action} | "
-            f"L: {res.get('left_column','?')} | "
-            f"C: {res.get('center_column','?')} | "
-            f"R: {res.get('right_column','?')} | "
+            f"L: {res.get(COL_LEFT_KEY, '?')} | "
+            f"C: {res.get(COL_CENTER_KEY, '?')} | "
+            f"R: {res.get(COL_RIGHT_KEY, '?')} | "
             f"REASON: {reasoning} | "
             f"HISTORY: {[h['action'] for h in self.history]}"
         )
 
     def publish_stop(self):
         msg = Twist()
-        msg.linear.x = 0.0
+        msg.linear.x  = 0.0
         msg.angular.z = 0.0
         self.cmd_vel_pub.publish(msg)
         self.get_logger().warn("Fallback: published STOP due to LLM error.")
