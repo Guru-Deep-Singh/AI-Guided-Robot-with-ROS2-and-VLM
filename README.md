@@ -4,27 +4,37 @@
 [![Python](https://img.shields.io/badge/python-3.8%2B-green.svg)](https://www.python.org/)
 [![Gazebo](https://img.shields.io/badge/Gazebo-Classic-orange.svg)](https://gazebosim.org/)
 [![Ubuntu](https://img.shields.io/badge/Ubuntu-20.04-E95420.svg)](https://releases.ubuntu.com/20.04/)
-[![Ollama](https://img.shields.io/badge/Ollama-supported-000000.svg)](https://ollama.com/)
 [![VLM](https://img.shields.io/badge/Vision%20Language%20Model-LLM%2FVLM-purple.svg)](#)
-
-![gif](./images/phase1.gif)
+[![AMD MI300X](https://img.shields.io/badge/AMD%20MI300X-Instinct-ED1C24.svg)](https://www.amd.com/en/products/accelerators/instinct/mi300/mi300x.html)
 
 This project provides a ROS 2-based autonomous driving stack for a simple car robot, controlled by a cloud (or local) Large Language Model / Vision Language Model (LLM/VLM).  
 Gazebo is used to simulate the robot in a road environment, and an LLM decides high-level driving actions (FORWARD / LEFT / RIGHT / STOP) from camera images.
+
+## Monocular Vision-Based Guidance with OpenAI GPT4.1
+![gif](./images/phase1.gif)
+
+## Monocular and 2D Lidar-Based Guidance with Qwen2.5-VL-72B on AMD MI300x
+![gif](./images/phase2.gif)
 
 ### Repository layout
 
 - **`ros2_ws/`**: ROS 2 workspace
   - **`src/rwi_bringup`**: launch files to start Gazebo, spawn the robot, and run the LLM driver
-    - `launch/sim_gazebo.launch.py`: starts Gazebo with `road_uturn.world`, spawns the robot, and launches the agent process
+    - `launch/sim_gazebo.launch.py`: starts Gazebo with `road_uturn.world`, spawns the robot, and launches the agent process (supports `use_lidar` parameter)
     - `launch/stereo_depth.launch.py`: stereo processing pipeline (rectification, disparity, point cloud)
   - **`src/rwi_agent_cloud`**: Python node that talks to the LLM backend
-    - `rwi_agent_cloud/llm_driver_node.py`: subscribes to camera images, calls the LLM (OpenAI or Ollama) and publishes `cmd_vel` and `AgentIntent`
+    - `rwi_agent_cloud/llm_driver_node.py`: Camera-only driver node. Subscribes to camera images, calls the LLM (OpenAI or Ollama) and publishes `cmd_vel` and `AgentIntent`.
+    - `rwi_agent_cloud/llm_driver_node_lidar.py`: Lidar + Camera driver node. Subscribes to camera and lidar, renders a 2D top-down lidar map, and sends both as multimodal input to the LLM (OpenAI or Local/Qwen).
     - `setup.py`: Python packaging / console entry point (`llm_driver`)
   - **`src/rwi_interfaces`**: custom message definitions
     - `msg/AgentIntent.msg`: intent + reasoning from the LLM
   - **`src/rwi_sim_gazebo`**: Gazebo simulation assets (`worlds/road_uturn.world`, etc.)
   - **`src/rwi_description`**: robot description / URDF (`urdf/simple_car.urdf`)
+
+- **`qwen_creation/`**: Setup for hosting local VLMs (specifically Qwen2.5-VL)
+  - `qwen_vl_server.py`: FastAPI server exposing an OpenAI-compatible endpoint for Qwen2.5-VL.
+  - `Dockerfile`: Container configuration for ROCm/AMD GPU deployment.
+  - `Setup_qwen_AMD_Cloud.md`: Deployment instructions for AMD Cloud.
 
 - **`.env.example`**: example environment variables for LLM configuration (copy to `.env` and edit)
 
@@ -49,14 +59,14 @@ cp .env.example .env
 
 Relevant variables:
 
-- **`LLM_BACKEND`**: `"openai"` or `"ollama"`
+- **`LLM_BACKEND`**: `"openai"` or `"local"` (use `"local"` for Ollama or self-hosted servers)
 - **OpenAI backend**
   - `OPENAI_MODEL` (default: `gpt-4.1`)
   - `OPENAI_API_KEY`
-- **Ollama backend**
-  - `OLLAMA_BASE_URL` (e.g. `http://localhost:11434/v1` or a cloud endpoint)
-  - `OLLAMA_API_KEY` (if your Ollama endpoint requires it)
-  - `OLLAMA_MODEL`
+- **Local/Custom backend (Ollama, Qwen-VL, etc.)**
+  - `LOCAL_BASE_URL`: Base URL of your hosted model (e.g. `http://localhost:11434/v1` for Ollama or `http://<cloud-ip>:8001/v1` for a custom server)
+  - `LOCAL_API_KEY`: API key if required (defaults to "none")
+  - `LOCAL_MODEL`: Model name (e.g. `llama3`, `Qwen/Qwen2.5-VL-7B-Instruct`)
 - **Timing and image options**
   - `LLM_INTERVAL` (seconds between LLM calls, default `1.5`)
   - `IMAGE_SIZE` (e.g. `320x240`)
@@ -88,16 +98,22 @@ After building and sourcing the workspace:
 
 ```bash
 cd ros2_ws
-ros2 launch rwi_bringup sim_gazebo.launch.py agent_active:=true
+ros2 launch rwi_bringup sim_gazebo.launch.py agent_active:=true use_lidar:=false
 ```
+
+Parameters:
+- `agent_active` (default: `true`): Whether to start the agent node.
+- `use_lidar` (default: `false`): 
+    - `false`: Launches `llm_driver_node.py` (Camera only).
+    - `true`: Launches `llm_driver_node_lidar.py` (Camera + 2D Lidar).
 
 This will:
 
 - Start Gazebo with the `road_uturn.world` map
 - Spawn the `simple_car` robot
-- Launch the LLM driver node (`rwi_agent_cloud.llm_driver_node`), which:
-  - Subscribes to `/car_camera/image_raw`
-  - Encodes and sends the image to the selected LLM backend
+- Launch the selected LLM driver node (`llm_driver_node` or `llm_driver_node_lidar`), which:
+  - Subscribes to camera images (and `/scan` if `use_lidar` is true)
+  - Encodes and sends multimodal data to the selected LLM backend
   - Receives an action decision and reasoning as JSON
   - Publishes:
     - `AgentIntent` on `/agent/intent`
@@ -120,11 +136,24 @@ This launches composable nodes for:
 - Disparity computation
 - Point cloud generation (`/stereo_camera/points2`)
 
-### Development notes
+### Local VLM Hosting (Qwen2.5-VL)
 
-- The `rwi_agent_cloud` package exposes `llm_driver` as a console script entry point, mapping to `rwi_agent_cloud.llm_driver_node:main`.
-- The node supports two backends via the `LLM_BACKEND` variable:
-  - `"ollama"`: uses `OLLAMA_BASE_URL` / `OLLAMA_API_KEY` / `OLLAMA_MODEL`
-  - `"openai"` (default): uses `OPENAI_API_KEY` / `OPENAI_MODEL`
-- The logic in `llm_driver_node.py` includes a detailed system prompt and maintains a short history of past actions to reduce oscillations in steering decisions.
+For high-performance local inference, this repository includes a FastAPI server for **Qwen2.5-VL**, optimized for AMD GPUs (ROCm).
+
+1. **Setup on AMD Cloud / Local Machine:**
+   Follow the detailed instructions in [`qwen_creation/Setup_qwen_AMD_Cloud.md`](./qwen_creation/Setup_qwen_AMD_Cloud.md).
+
+2. **Run with Docker:**
+   ```bash
+   docker build -t qwen-vl:rocm ./qwen_creation
+   docker run --rm -it --device=/dev/kfd --device=/dev/dri -p 8001:8000 qwen-vl:rocm
+   ```
+
+3. **Configure ROS 2 node:**
+   Update your `.env` to use the local backend:
+   ```env
+   LLM_BACKEND=local
+   LOCAL_BASE_URL=http://your-server-ip:8001
+   LOCAL_MODEL=Qwen/Qwen2.5-VL-72B-Instruct
+   ```
 
