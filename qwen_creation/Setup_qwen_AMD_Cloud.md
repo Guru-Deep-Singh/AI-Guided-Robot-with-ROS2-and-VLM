@@ -24,3 +24,12 @@ docker run --rm -it \
   -p 8001:8000 \
   -e MODEL_ID="Qwen/Qwen2.5-VL-72B-Instruct" \
   qwen-vl:rocm
+```
+
+- Test the server
+```bash
+curl http://<your_amd_cloud_ip>:8001/health
+```
+```bash
+python3 test_qwen.py
+```

@@ -50,7 +50,7 @@ def test_qwen(image_path: str, user_prompt: str = "What direction should the rob
 
     base64_image = encode_image(image_path)
 
-    url     = "http://165.245.128.132:8001/v1/chat/completions"
+    url     = "http://<your_amd_cloud_ip>:8001/v1/chat/completions"
     headers = {"Content-Type": "application/json"}
 
     payload = {
