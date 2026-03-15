@@ -16,7 +16,7 @@ from openai import OpenAI
 
 load_dotenv()
 if not os.getenv("OPENAI_API_KEY") and not os.getenv("LLM_BACKEND"):
-    load_dotenv(os.path.join(os.path.expanduser('~'), 'ros-with-ai', '.env'))
+    load_dotenv(os.path.join(os.path.expanduser('~'), 'git_reps/AI-Guided-Robot-with-ROS2-and-VLM', '.env'))
 
 # ------- Backend config -------
 LLM_BACKEND = os.getenv("LLM_BACKEND", "openai").lower()  # "openai" or "local"
@@ -34,7 +34,12 @@ else:
     MODEL  = os.getenv("OPENAI_MODEL", "gpt-4.1")
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# ------- Prompts ------- 
+# LOCAL_MODEL_TYPE switches prompt and response parsing when using a local backend.
+#   "general"    — use SYSTEM_PROMPT_LOCAL, expects full JSON with action/reasoning
+#   "finetuned"  — use SYSTEM_PROMPT_LOCAL_FINE_TUNED, expects {"intent": "X"} only
+LOCAL_MODEL_TYPE = os.getenv("LOCAL_MODEL_TYPE", "general").lower()
+
+# ------- Prompts -------
 
 SYSTEM_PROMPT_OPENAI = """
 You are an autonomous driving system controlling a robot approximately 2.55 m long and 1.27 m wide.
@@ -108,7 +113,7 @@ STEP 5 — RETURN JSON only, no extra text:
 }
 """
 
-# Compact prompt for local models like Qwen2.5-VL 
+# Compact prompt for general local models like Qwen2.5-VL-72B
 SYSTEM_PROMPT_LOCAL = """You are a robot navigation controller. Robot is ~2.55m long, ~1.27m wide, on a gray asphalt road.
 Your task is to drive the robot on the road. Always try to keep the robot in the center of the road, close to the yellow line.
 If you can not see the yellow line, Always try to keep the robot in the center of the road i.e. more asphalt area.
@@ -139,7 +144,7 @@ ANALYZE IN ORDER:
    - Drifts right in top half → RIGHT curve
    - Stays centered → STRAIGHT
    ALWAYS use yellow line to determine the road direction. If you can not see yellow line, use white lines to determine the road direction. Give them priority over the distance of obstacle during curves.
-   Foloow the Line even if it means to go close to the obstacle.
+   Follow the Line even if it means to go close to the obstacle.
 
 3. LIDAR — read the labeled zones (AHEAD / LEFT / RIGHT):
    - WHITE dots in the LEFT or RIGHT zones = road boundary walls. IGNORE them — they are always there.
@@ -166,19 +171,42 @@ OUTPUT — ONLY this JSON, no extra text:
   "reasoning": "<max 8 words>"
 }"""
 
-# ------- Runtime config -------
-ACTIVE_PROMPT = SYSTEM_PROMPT_LOCAL if LLM_BACKEND == "local" else SYSTEM_PROMPT_OPENAI
+# Minimal prompt for the fine-tuned 7B model — matches training exactly.
+# The model has learned driving behaviour in its weights; it does not need
+# step-by-step instructions, only the same prompt it saw during fine-tuning.
+SYSTEM_PROMPT_LOCAL_FINE_TUNED = (
+    "You are a robot navigation controller. "
+    "Given a forward camera image and a top-down LiDAR map, "
+    "output only a JSON object with a single key 'intent' "
+    "with value one of: FORWARD, LEFT, RIGHT, REVERSE, STOP."
+)
 
+USER_PROMPT_LOCAL_FINE_TUNED = (
+    "IMAGE 1: forward camera view. "
+    "IMAGE 2: top-down LiDAR map (robot = cyan dot at centre facing up, "
+    "rings = 4m/8m/12m, white dots = obstacles). "
+    "What is the next driving action?"
+)
+
+# ------- Active prompt selection -------
+if LLM_BACKEND == "openai":
+    ACTIVE_PROMPT = SYSTEM_PROMPT_OPENAI
+elif LOCAL_MODEL_TYPE == "finetuned":
+    ACTIVE_PROMPT = SYSTEM_PROMPT_LOCAL_FINE_TUNED
+else:
+    ACTIVE_PROMPT = SYSTEM_PROMPT_LOCAL
+
+# ------- Runtime config -------
 LLM_INTERVAL = float(os.getenv("LLM_INTERVAL", "1.5"))
 
-_img_w, _img_h = os.getenv("IMAGE_SIZE", "320x320").split("x")  # Camera is 800x800 square — keep square to avoid aspect ratio distortion
+_img_w, _img_h = os.getenv("IMAGE_SIZE", "320x320").split("x") # Camera is 800x800 square — keep square to avoid aspect ratio distortion
 IMAGE_WIDTH  = int(_img_w)
 IMAGE_HEIGHT = int(_img_h)
 JPEG_QUALITY = int(os.getenv("JPEG_QUALITY", "85"))
 
 LIDAR_IMG_SIZE  = 256
 LIDAR_MAX_RANGE = 12.0
-LIDAR_FOV_DEG   = 120.0         # actual sensor FOV from URDF (−60° to +60°)
+LIDAR_FOV_DEG   = 120.0   # actual sensor FOV from URDF (−60° to +60°)
 LIDAR_RINGS_M   = [4.0, 8.0, 12.0]
 
 
@@ -207,11 +235,13 @@ class LLMDriverNode(Node):
         self.timer = self.create_timer(LLM_INTERVAL, self.process_llm_logic)
         self.get_logger().info(
             f"LLM Driver Node ready. "
-            f"Backend: {LLM_BACKEND.upper()} | Model: {self.model} | "
+            f"Backend: {LLM_BACKEND.upper()} | "
+            f"Model type: {LOCAL_MODEL_TYPE if LLM_BACKEND == 'local' else 'openai'} | "
+            f"Model: {self.model} | "
             f"Interval: {LLM_INTERVAL}s | Image: {IMAGE_WIDTH}x{IMAGE_HEIGHT} @ Q{JPEG_QUALITY}"
         )
 
-    # ------- Sensor callbacks ------- 
+    # ------- Sensor callbacks -------
 
     def img_cb(self, msg):
         self.latest_image = msg
@@ -230,7 +260,7 @@ class LLMDriverNode(Node):
         except Exception as e:
             self.get_logger().error(f"LiDAR image render/publish failed: {e}")
 
-    # ------- LiDAR: top-down image ------- 
+    # ------- LiDAR: top-down image -------
 
     def render_lidar_bgr(self):
         """Render 2D LiDAR (120° FOV, −60° to +60°) as a top-down BGR image.
@@ -266,7 +296,7 @@ class LLMDriverNode(Node):
         wy = (cy - r_px * np.cos(wedge_angles)).astype(int)
         wedge_pts = np.column_stack([wx, wy])
         wedge_pts = np.vstack([[cx, cy], wedge_pts, [cx, cy]])
-        cv2.fillPoly(img, [wedge_pts.astype(np.int32)], (30, 30, 30))  # dark gray
+        cv2.fillPoly(img, [wedge_pts.astype(np.int32)], (30, 30, 30))
 
         # ------- Distance rings ------- 
         ring_colors = [(100, 60, 60), (60, 100, 60), (60, 60, 100)]
@@ -348,19 +378,17 @@ class LLMDriverNode(Node):
             except json.JSONDecodeError:
                 pass
 
-        action_match = re.search(
-            r'"action"\s*:\s*"(FORWARD|LEFT|RIGHT|REVERSE|STOP)"', raw
-        )
-        if action_match:
-            reason_match = re.search(r'"reasoning"\s*:\s*"([^"]*)', raw)
-            return {
-                "action":    action_match.group(1),
-                "reasoning": reason_match.group(1) if reason_match else "truncated",
-            }
+        # Fallback: try to extract intent (fine-tuned model) or action (general model)
+        for key in ("intent", "action"):
+            key_match = re.search(
+                rf'"{key}"\s*:\s*"(FORWARD|LEFT|RIGHT|REVERSE|STOP)"', raw
+            )
+            if key_match:
+                return {key: key_match.group(1)}
 
         raise ValueError(f"No JSON found in response: {raw[:200]}")
 
-    # ------- Main LLM loop ------- 
+    # ------- Main LLM loop -------
 
     def process_llm_logic(self):
         if self.latest_image is None:
@@ -376,45 +404,55 @@ class LLMDriverNode(Node):
         cam_b64 = base64.b64encode(buf).decode('utf-8')
 
         lidar_b64 = self.render_lidar_base64()
-
+        
+        # ── Build messages depending on model type ────────────────────────────
         messages = [{"role": "system", "content": ACTIVE_PROMPT}]
 
-        if self.history:
-            history_str = " -> ".join([h['action'] for h in self.history])
-            messages.append({
-                "role":    "user",
-                "content": f"My last {len(self.history)} actions were: {history_str}.",
-            })
-
-        if lidar_b64:
+        if LOCAL_MODEL_TYPE == "finetuned" and LLM_BACKEND == "local":
+            # Fine-tuned model: no history injection, exact training prompt
             content = [
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{cam_b64}"}},
-                {"type": "text",      "text": "IMAGE 1 above: Camera (forward view). IMAGE 2 below: LiDAR map (top-down, robot = cyan dot at center facing up, rings = 4m/8m/12m)."},
                 {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{lidar_b64}"}},
-                {"type": "text",      "text": "What is my next action?"},
+                {"type": "text",      "text": USER_PROMPT_LOCAL_FINE_TUNED},
             ]
+            messages.append({"role": "user", "content": content})
+
         else:
-            content = [
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{cam_b64}"}},
-                {"type": "text",      "text": "Camera view only (LiDAR unavailable). What is my next action?"},
-            ]
+            # General model (72B or OpenAI): history context + descriptive text
+            if self.history:
+                history_str = " -> ".join([h['action'] for h in self.history])
+                messages.append({
+                    "role":    "user",
+                    "content": f"My last {len(self.history)} actions were: {history_str}.",
+                })
 
-        messages.append({"role": "user", "content": content})
+            if lidar_b64:
+                content = [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{cam_b64}"}},
+                    {"type": "text",      "text": "IMAGE 1 above: Camera (forward view). IMAGE 2 below: LiDAR map (top-down, robot = cyan dot at center facing up, rings = 4m/8m/12m)."},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{lidar_b64}"}},
+                    {"type": "text",      "text": "What is my next action?"},
+                ]
+            else:
+                content = [
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{cam_b64}"}},
+                    {"type": "text",      "text": "Camera view only (LiDAR unavailable). What is my next action?"},
+                ]
+            messages.append({"role": "user", "content": content})
 
+        # ── Call LLM ──────────────────────────────────────────────────────────
         try:
             if LLM_BACKEND == "local":
-                # Qwen2.5-VL via FastAPI server — no response_format, no extra_body
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
-                    max_tokens=256,
+                    max_tokens=64 if LOCAL_MODEL_TYPE == "finetuned" else 256,
                     temperature=0.1,
                 )
                 raw_content = response.choices[0].message.content or ""
                 self.get_logger().debug(f"Raw LLM response: {raw_content[:300]}")
                 res = self._extract_json(raw_content)
             else:
-                # OpenAI — guaranteed JSON via response_format
                 response = self.client.chat.completions.create(
                     model=self.model,
                     messages=messages,
@@ -422,7 +460,8 @@ class LLMDriverNode(Node):
                 )
                 res = json.loads(response.choices[0].message.content)
 
-            action    = res.get('action', 'STOP')
+            # ── Resolve action — fine-tuned uses "intent", general uses "action"
+            action = res.get('intent') or res.get('action', 'STOP')
             reasoning = res.get('reasoning', '')
 
             if action not in ["FORWARD", "LEFT", "RIGHT", "REVERSE", "STOP"]:
@@ -440,7 +479,7 @@ class LLMDriverNode(Node):
             self.get_logger().error(f"LLM call failed: {e}")
             self.publish_stop()
 
-    # ------- Command publishing ------- 
+    # ------- Command publishing -------
 
     def publish_commands(self, action: str, reasoning: str, res: dict):
         intent           = AgentIntent()
@@ -474,15 +513,22 @@ class LLMDriverNode(Node):
 
         self.cmd_vel_pub.publish(msg)
 
-        self.get_logger().info(
-            f"ACTION: {action} | "
-            f"L: {res.get('left_column','?')} | "
-            f"C: {res.get('center_column','?')} | "
-            f"R: {res.get('right_column','?')} | "
-            f"LIDAR: {res.get('lidar_summary','?')} | "
-            f"REASON: {reasoning} | "
-            f"HISTORY: {[h['action'] for h in self.history]}"
-        )
+        # Log format adapts to model type
+        if LOCAL_MODEL_TYPE == "finetuned" and LLM_BACKEND == "local":
+            self.get_logger().info(
+                f"ACTION: {action} | "
+                f"HISTORY: {[h['action'] for h in self.history]}"
+            )
+        else:
+            self.get_logger().info(
+                f"ACTION: {action} | "
+                f"L: {res.get('left_column','?')} | "
+                f"C: {res.get('center_column','?')} | "
+                f"R: {res.get('right_column','?')} | "
+                f"LIDAR: {res.get('lidar_summary','?')} | "
+                f"REASON: {reasoning} | "
+                f"HISTORY: {[h['action'] for h in self.history]}"
+            )
 
     def publish_stop(self):
         self.cmd_vel_pub.publish(Twist())

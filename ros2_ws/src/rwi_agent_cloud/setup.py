@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'llm_driver = rwi_agent_cloud.llm_driver_node_lidar:main'
+            'llm_driver    = rwi_agent_cloud.llm_driver_node_lidar:main',
+            'teleop_logger = rwi_agent_cloud.teleop_logger_node:main',
         ],
     },
 )
