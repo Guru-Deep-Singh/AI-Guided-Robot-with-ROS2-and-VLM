@@ -24,7 +24,6 @@ find_package(ament_cmake REQUIRED)
 # Install Gazebo assets
 install(DIRECTORY
   worlds
-  models
   DESTINATION share/${PROJECT_NAME}
 )
 

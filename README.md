@@ -16,6 +16,9 @@ Gazebo is used to simulate the robot in a road environment, and an LLM decides h
 ## Monocular and 2D Lidar-Based Guidance with Qwen2.5-VL-72B on AMD MI300x
 ![gif](./images/phase2.gif)
 
+## Fine-Tuned Qwen2.5-VL-7B for Autonomous Driving
+![gif](./images/phase3.gif)
+
 ### Repository layout
 
 - **`ros2_ws/`**: ROS 2 workspace
@@ -25,6 +28,7 @@ Gazebo is used to simulate the robot in a road environment, and an LLM decides h
   - **`src/rwi_agent_cloud`**: Python node that talks to the LLM backend
     - `rwi_agent_cloud/llm_driver_node.py`: Camera-only driver node. Subscribes to camera images, calls the LLM (OpenAI or Ollama) and publishes `cmd_vel` and `AgentIntent`.
     - `rwi_agent_cloud/llm_driver_node_lidar.py`: Lidar + Camera driver node. Subscribes to camera and lidar, renders a 2D top-down lidar map, and sends both as multimodal input to the LLM (OpenAI or Local/Qwen).
+    - `rwi_agent_cloud/teleop_logger_node.py`: Teleoperation node that allows you to control the robot via arrow keys while collecting supervised driving datasets (camera, lidar projection, keystrokes).
     - `setup.py`: Python packaging / console entry point (`llm_driver`)
   - **`src/rwi_interfaces`**: custom message definitions
     - `msg/AgentIntent.msg`: intent + reasoning from the LLM
@@ -33,8 +37,14 @@ Gazebo is used to simulate the robot in a road environment, and an LLM decides h
 
 - **`qwen_creation/`**: Setup for hosting local VLMs (specifically Qwen2.5-VL)
   - `qwen_vl_server.py`: FastAPI server exposing an OpenAI-compatible endpoint for Qwen2.5-VL.
+  - `qwen_vl_server_finetuned.py`: AMD cloud server script specifically adapted for the fine-tuned model.
+  - `test/test_qwen_fine_tuned.py`: Script to test the fine-tuned Qwen model's outputs locally.
   - `Dockerfile`: Container configuration for ROCm/AMD GPU deployment.
   - `Setup_qwen_AMD_Cloud.md`: Deployment instructions for AMD Cloud.
+
+- **`fine_tuning/`**: Scripts and notebooks for fine-tuning the VLM
+  - `qwen_robot_finetune_no_quant.ipynb`: Jupyter Notebook containing the Qwen2.5-VL-7B fine-tuning implementation with the personalized teleop dataset.
+  - `inspect_dataset.py` & `upload_dataset_to_hf.py`: Utilities to preview the collected teleop log datasets and easily upload them to HuggingFace.
 
 - **`.env.example`**: example environment variables for LLM configuration (copy to `.env` and edit)
 
@@ -66,7 +76,8 @@ Relevant variables:
 - **Local/Custom backend (Ollama, Qwen-VL, etc.)**
   - `LOCAL_BASE_URL`: Base URL of your hosted model (e.g. `http://localhost:11434/v1` for Ollama or `http://<cloud-ip>:8001/v1` for a custom server)
   - `LOCAL_API_KEY`: API key if required (defaults to "none")
-  - `LOCAL_MODEL`: Model name (e.g. `llama3`, `Qwen/Qwen2.5-VL-7B-Instruct`)
+  - `LOCAL_MODEL_TYPE`: Used to parse prompts correctly depending on the model format (e.g. `general` or `finetuned`)
+  - `LOCAL_MODEL`: Model name (e.g. `Qwen/Qwen2.5-VL-72B-Instruct` or `biggestFudge/qwen2-5-vl-7b-robot-merged-v2`)
 - **Timing and image options**
   - `LLM_INTERVAL` (seconds between LLM calls, default `1.5`)
   - `IMAGE_SIZE` (e.g. `320x240`)
