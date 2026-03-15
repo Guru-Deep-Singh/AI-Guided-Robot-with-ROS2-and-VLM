@@ -20,7 +20,7 @@ sudo ufw status
 ```bash
 mkdir qwen_vl
 cd qwen_vl
-# Paste qwen_vl_server.py and Dockerfile into this folder
+# Paste qwen_vl_server.py (or qwen_vl_server_finetuned.py for the fine-tuned model) and Dockerfile into this folder
 ```
 
 **Build the Docker image (one-time):**
@@ -45,15 +45,16 @@ docker run --rm -it \
 
 ## Running the fine-tuned 7B robot model
 
+> Ensure you configure the container or Dockerfile to use `qwen_vl_server_finetuned.py` as your server script if specifically setting up the fine-tuned infrastructure.
+
 ```bash
 docker run --rm -it \
   --device=/dev/kfd --device=/dev/dri \
   --group-add video --ipc=host --shm-size=16g \
   -p 8001:8000 \
-  -e MODEL_ID="biggestFudge/qwen2-5-vl-7b-robot-merged" \
+  -e MODEL_ID="biggestFudge/qwen2-5-vl-7b-robot-merged-v2" \
   -e MIN_PIXELS="200704" \
   -e MAX_PIXELS="200704" \
-  -e HF_TOKEN="your_hf_token" \
   qwen-vl:rocm
 ```
 
@@ -75,7 +76,8 @@ Update `~/ros-with-ai/.env` to point at the fine-tuned model:
 ```bash
 LLM_BACKEND=local
 LOCAL_BASE_URL=http://<your_amd_cloud_ip>:8001/v1
-LOCAL_MODEL=biggestFudge/qwen2-5-vl-7b-robot-merged
+LOCAL_MODEL_TYPE=finetuned
+LOCAL_MODEL=biggestFudge/qwen2-5-vl-7b-robot-merged-v2
 LOCAL_API_KEY=none
 LLM_INTERVAL=1.5
 IMAGE_SIZE=320x320
@@ -109,4 +111,4 @@ To go back to the 72B model, just stop the container and rerun with the 72B
 | Model | Speed | Use case |
 |-------|-------|----------|
 | `Qwen/Qwen2.5-VL-72B-Instruct` | ~3-5s/call | General baseline |
-| `YOUR_HF_USERNAME/qwen2-5-vl-7b-robot-merged` | <1s/call | Fine-tuned robot navigation |
+| `biggestFudge/qwen2-5-vl-7b-robot-merged-v2` | <1s/call | Fine-tuned robot navigation |
