@@ -50,7 +50,7 @@ def generate_launch_description():
 
     use_lidar_arg = DeclareLaunchArgument(
         'use_lidar',
-        default_value='false',
+        default_value='true',
         description='Whether to use the lidar-enabled agent node'
     )
 
